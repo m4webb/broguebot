@@ -38,16 +38,27 @@ class WindowSampler:
         return self.cache[path]
 
     def sample(self, batch_size: int) -> dict:
+        # Every window must be exactly self.window long so the batch stacks
+        # into a rectangular tensor; episodes shorter than the window are
+        # skipped (resampled) rather than yielding a ragged batch.
         obs, acts = [], []
-        for _ in range(batch_size):
+        attempts = 0
+        while len(obs) < batch_size:
+            attempts += 1
+            if attempts > 1000 * batch_size:
+                raise RuntimeError(
+                    f"too few episodes with length >= window={self.window}; "
+                    "lower --window or collect longer episodes")
             ep = self._episode(self.rng.choice(self.files))
             T = len(ep["actions"])
-            w = min(self.window, T)
-            start = self.rng.randrange(0, T - w + 1)
+            if T < self.window:
+                continue
+            start = self.rng.randrange(0, T - self.window + 1)
+            end = start + self.window
             feats = [featurize(ep["frames"][t].tobytes())
-                     for t in range(start, start + w)]
+                     for t in range(start, end)]
             obs.append(batch_feats(feats))
-            acts.append(ep["actions"][start:start + w].astype(np.int64))
+            acts.append(ep["actions"][start:end].astype(np.int64))
         out = {k: torch.as_tensor(np.stack([o[k] for o in obs]))
                for k in obs[0]}
         return out, torch.as_tensor(np.stack(acts))
