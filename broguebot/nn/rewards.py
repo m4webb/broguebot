@@ -59,6 +59,26 @@ def survival_reward(prev, cur, info, w_alive: float = 0.001) -> float:
     return r
 
 
+def hp_reward(prev, cur, info, w_dmg: float = 0.005,
+             w_heal: float = 0.002) -> float:
+    """Default reward MINUS a penalty for HP lost (and a smaller reward for HP
+    regained). Targets the warm-start failure mode (dies fighting mid-tier
+    monsters): pressure to take less damage without farming risk — the best
+    case is taking zero damage (reward 0), so unlike a per-step alive bonus it
+    can't be gamed by stalling, and w_heal<w_dmg makes damage->heal cycles net
+    negative. HP is the stats block's quantized bar; only credited on
+    non-terminal steps (the DONE frame's HP is unreliable)."""
+    r = default_reward(prev, cur, info)
+    if prev is not None and not (cur is None or cur.done
+                                 or cur.stats.game_has_ended):
+        dhp = cur.stats.hp_pct - prev.stats.hp_pct
+        if dhp < 0:
+            r += w_dmg * dhp          # dhp<0 -> penalty
+        elif dhp > 0:
+            r += w_heal * dhp
+    return r
+
+
 def dense_reward(prev, cur, info) -> float:
     """Exploration + survival shaping together over the depth-progress spine."""
     r = explore_reward(prev, cur, info)
@@ -72,4 +92,5 @@ REWARDS = {
     "explore": explore_reward,
     "survival": survival_reward,
     "dense": dense_reward,
+    "hp": hp_reward,
 }
