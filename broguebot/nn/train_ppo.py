@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from ..env import VectorEnv, wipe_gamedata
+from .rewards import REWARDS
 from .featurize import batch as batch_feats, featurize
 from .model import BroguePolicy, Config, count_params
 
@@ -73,6 +74,8 @@ def main():
                     "sets backprop peak memory — keep ~128 to stay in 12GB")
     ap.add_argument("--compile", action="store_true",
                     help="torch.compile the encoder (~1.2x; adds startup cost)")
+    ap.add_argument("--reward", default="default", choices=list(REWARDS),
+                    help="reward shaping: default|explore|survival|dense")
     args = ap.parse_args()
     dev = args.device
 
@@ -90,7 +93,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     wipe_gamedata(args.gamedata)
-    vec = VectorEnv(args.envs, args.gamedata)
+    vec = VectorEnv(args.envs, args.gamedata, reward_fn=REWARDS[args.reward])
     frames = vec.reset()
     hidden = model.initial_state(args.envs, dev)
     ep_returns, ep_depths = [], []
