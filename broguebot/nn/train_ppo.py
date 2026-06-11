@@ -71,12 +71,16 @@ def main():
     ap.add_argument("--chunk", type=int, default=128,
                     help="frames per encoder mini-batch in the unroll (0=all); "
                     "sets backprop peak memory — keep ~128 to stay in 12GB")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile the encoder (~1.2x; adds startup cost)")
     args = ap.parse_args()
     dev = args.device
 
     model = BroguePolicy(getattr(Config, args.config)()).to(dev)
     model.grad_checkpoint = args.grad_checkpoint
     model.encode_chunk = args.chunk
+    if args.compile:
+        model.encoder = torch.compile(model.encoder)
     if args.init:
         ckpt = torch.load(args.init, map_location=dev)
         model.load_state_dict(ckpt["model"])

@@ -45,10 +45,21 @@ observation channel. This file is the handoff between the laptop session
   start as initialization only, NO KL tether — deliberate, so optimized
   play can diverge from any teacher), `evaluate.py` (fixed 200-seed suite).
   Both trainers take `--amp` (bf16 autocast, default on), `--grad-checkpoint`
-  (recompute the encoder in backward, default on) and `--chunk N` (frames per
-  encoder mini-batch in the unroll, default 128). `model.encode_frames()`
-  implements the chunked+checkpointed sequence encode that `unroll`/
-  `masked_unroll` call — see the 12GB memory note below.
+  (recompute the encoder in backward, default on), `--chunk N` (frames per
+  encoder mini-batch in the unroll, default 128) and `--compile` (torch.compile
+  the encoder, ~1.2x, default off). `model.encode_frames()` implements the
+  chunked+checkpointed sequence encode that `unroll`/`masked_unroll` call —
+  see the 12GB memory note below.
+- `broguebot/nn/scripted_actor.py` — the warm-start data teacher. Renders the
+  IPC frame's full 100x34 display buffer (sidebar+messages+map, all
+  displayGlyph values) to ASCII and runs it through `screen.parse()`, so the
+  legacy `Brain` drives the IPC env unchanged — monster names come from the
+  sidebar, item menus/confirms are detected the same way the terminal bot saw
+  them. `ScriptedActor` is a one-keycode-per-step `actor(frame)->action` for
+  `trajlog.collect`: it queues the Brain's multi-key macros and answers
+  prompt frames from the Action's hints. Inventory is read straight from the
+  IPC item records. `broguebot/nn/gen_scripted.py` is the CLI that records
+  episodes to a BC dataset (reaches depth ~3-4, ~200 steps/s).
 - Legacy (still works, useful as a data teacher / baseline): scripted bot
   in `broguebot/brain.py` + tmux/pty plumbing (`tmux.py`, `ptyhost.py`,
   `game.py`, `headless.py`, dashboard). It reaches ~depth 3-6; caustic gas
@@ -104,10 +115,14 @@ observation channel. This file is the handoff between the laptop session
    want more, the lever is the unroll, not env sharding: batch the GRU/heads
    over time or move to the Transformer-XL block noted below. Multi-process
    VectorEnv sharding only helps once the learner is faster.
-3. Warm-start decision: generate scripted-bot trajectories through the IPC
-   env for UI mechanics (needs a small adapter driving `Brain` from frames,
-   not yet written), BC on them, then PPO with `--init`. ALWAYS run a
-   cold-start PPO control alongside; if warm-start underperforms, drop it.
+3. Warm-start: adapter is BUILT (`nn/scripted_actor.py` + `nn/gen_scripted.py`,
+   validated end-to-end — drives the Brain over IPC to depth ~3-4). Next:
+   generate a dataset (`python -m broguebot.nn.gen_scripted --out data/scripted
+   --episodes 500 --seed 1`), `train_bc` on it, then PPO with `--init bc.pt`.
+   ALWAYS run a cold-start PPO control alongside; if warm-start underperforms,
+   drop it. (Teacher polish later if it helps: gas/hazard color detection is
+   currently stubbed in the adapter — the Brain falls back to message/HP cues,
+   which likely costs it a level or two vs the terminal bot's depth 3-6.)
 4. Real training: reward shaping experiments (exploration bonus, kill
    credit), entropy schedule, eval every N updates on the fixed seed suite.
 5. Known gaps / ideas: no Ctrl-modifier in the protocol (shift-run covers
