@@ -10,6 +10,7 @@ no KL tether — the optimizer is free to leave the prior behind.
 """
 
 import argparse
+import contextlib
 import os
 import time
 
@@ -22,11 +23,18 @@ from .featurize import batch as batch_feats, featurize
 from .model import BroguePolicy, Config, count_params
 
 
+def amp_ctx(enabled: bool, dev: str):
+    """bf16 autocast on CUDA when enabled; a no-op otherwise."""
+    if enabled and dev == "cuda":
+        return torch.autocast("cuda", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
+
+
 def masked_unroll(model, obs_seq, hidden, dones):
     """Like model.unroll but resets hidden where dones[t-1] is set."""
     B, T = obs_seq["glyphs"].shape[:2]
     flat = {k: v.reshape(B * T, *v.shape[2:]) for k, v in obs_seq.items()}
-    z = model.encode_frame(flat).reshape(B, T, -1)
+    z = model.encode_frames(flat).reshape(B, T, -1)
     logits, values = [], []
     for t in range(T):
         if t > 0:
@@ -56,10 +64,19 @@ def main():
     ap.add_argument("--gamedata", default="gamedata/ppo")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
+    ap.add_argument("--amp", action=argparse.BooleanOptionalAction,
+                    default=True, help="bf16 autocast (CUDA only)")
+    ap.add_argument("--grad-checkpoint", action=argparse.BooleanOptionalAction,
+                    default=True, help="recompute encoder in backward")
+    ap.add_argument("--chunk", type=int, default=128,
+                    help="frames per encoder mini-batch in the unroll (0=all); "
+                    "sets backprop peak memory — keep ~128 to stay in 12GB")
     args = ap.parse_args()
     dev = args.device
 
     model = BroguePolicy(getattr(Config, args.config)()).to(dev)
+    model.grad_checkpoint = args.grad_checkpoint
+    model.encode_chunk = args.chunk
     if args.init:
         ckpt = torch.load(args.init, map_location=dev)
         model.load_state_dict(ckpt["model"])
@@ -85,7 +102,12 @@ def main():
                 feats = batch_feats([featurize(f.raw) for f in frames])
                 obs = {k: torch.as_tensor(v, device=dev)
                        for k, v in feats.items()}
-                logits, value, _aux, hidden = model(obs, hidden)
+                with amp_ctx(args.amp, dev):
+                    logits, value, _aux, hidden = model(obs, hidden)
+                # Carry hidden/value in fp32: recurrent state and GAE math
+                # are precision-sensitive; only the encoder ran in bf16.
+                logits, value = logits.float(), value.float()
+                hidden = hidden.float()
                 dist = torch.distributions.Categorical(logits=logits)
                 act = dist.sample()
                 results = vec.step(act.tolist())
@@ -106,7 +128,9 @@ def main():
             feats = batch_feats([featurize(f.raw) for f in frames])
             obs = {k: torch.as_tensor(v, device=dev)
                    for k, v in feats.items()}
-            _, last_value, _, _ = model(obs, hidden)
+            with amp_ctx(args.amp, dev):
+                _, last_value, _, _ = model(obs, hidden)
+            last_value = last_value.float()
 
         acts = torch.stack(buf_act, 1)              # N,T
         logps = torch.stack(buf_logp, 1)
@@ -130,7 +154,10 @@ def main():
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
         for _ in range(args.epochs):
-            logits, values = masked_unroll(model, obs_seq, seg_hidden, dones)
+            with amp_ctx(args.amp, dev):
+                logits, values = masked_unroll(model, obs_seq, seg_hidden,
+                                               dones)
+            logits, values = logits.float(), values.float()
             dist = torch.distributions.Categorical(logits=logits)
             new_logp = dist.log_prob(acts)
             ratio = (new_logp - logps).exp()

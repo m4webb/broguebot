@@ -8,6 +8,7 @@ warms up), cross-entropy on actions.
 """
 
 import argparse
+import contextlib
 import os
 import random
 import time
@@ -63,7 +64,20 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
+    ap.add_argument("--amp", action=argparse.BooleanOptionalAction,
+                    default=True, help="bf16 autocast (CUDA only)")
+    ap.add_argument("--grad-checkpoint", action=argparse.BooleanOptionalAction,
+                    default=True, help="recompute encoder in backward")
+    ap.add_argument("--chunk", type=int, default=128,
+                    help="frames per encoder mini-batch in the unroll (0=all); "
+                    "sets backprop peak memory — keep ~128 to stay in 12GB")
     args = ap.parse_args()
+    dev = args.device
+
+    def amp_ctx():
+        if args.amp and dev == "cuda":
+            return torch.autocast("cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
 
     files = episode_files(args.data)
     if not files:
@@ -72,6 +86,8 @@ def main():
     sampler = WindowSampler(files, args.window)
 
     model = BroguePolicy(getattr(Config, args.config)()).to(args.device)
+    model.grad_checkpoint = args.grad_checkpoint
+    model.encode_chunk = args.chunk
     print(f"params: {count_params(model)/1e6:.2f}M")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
                             weight_decay=0.01)
@@ -84,7 +100,9 @@ def main():
         obs = {k: v.to(args.device) for k, v in obs.items()}
         acts = acts.to(args.device)
         hidden = model.initial_state(acts.shape[0], args.device)
-        logits, _values, _ = model.unroll(obs, hidden)
+        with amp_ctx():
+            logits, _values, _ = model.unroll(obs, hidden)
+        logits = logits.float()
         loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
                                acts.reshape(-1))
         opt.zero_grad(set_to_none=True)

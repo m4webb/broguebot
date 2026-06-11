@@ -44,6 +44,11 @@ observation channel. This file is the handoff between the laptop session
   `train_bc.py`, `train_ppo.py` (recurrent PPO; `--init bc.pt` = warm
   start as initialization only, NO KL tether — deliberate, so optimized
   play can diverge from any teacher), `evaluate.py` (fixed 200-seed suite).
+  Both trainers take `--amp` (bf16 autocast, default on), `--grad-checkpoint`
+  (recompute the encoder in backward, default on) and `--chunk N` (frames per
+  encoder mini-batch in the unroll, default 128). `model.encode_frames()`
+  implements the chunked+checkpointed sequence encode that `unroll`/
+  `masked_unroll` call — see the 12GB memory note below.
 - Legacy (still works, useful as a data teacher / baseline): scripted bot
   in `broguebot/brain.py` + tmux/pty plumbing (`tmux.py`, `ptyhost.py`,
   `game.py`, `headless.py`, dashboard). It reaches ~depth 3-6; caustic gas
@@ -56,14 +61,49 @@ observation channel. This file is the handoff between the laptop session
 - policy-in-loop on CPU: ~110 steps/s small config (model-bound)
 - BC and PPO trainers: smoke-tested end to end; checkpoints interchange
 
+## Verified numbers (desktop, RTX 5070 12GB, WSL2, torch 2.12+cu130)
+
+- raw VectorEnv: ~2,950 steps/s at 8 envs (faster than the laptop; env is
+  NOT the bottleneck here)
+- full base-config PPO (bf16 + grad-checkpoint, chunk=128): **~267 steps/s**,
+  ~6.2GB VRAM, 98–99% GPU util. Throughput is compute-bound on the
+  sequential GRU unroll, not memory — it plateaus ~280 sps as envs×segment
+  grow. Good default: `--envs 64 --segment 128` (peak ~5.7GB).
+- peak VRAM is set by `--chunk` (one encoder mini-batch's backward
+  recompute), ~independent of envs×segment: chunk 128→~5GB, 256→~9.4GB,
+  512→18GB (spills, do not use). envs×segment only grows the stored obs
+  tensors (int64 glyph buffer dominates), e.g. 64×256 → 9.5GB.
+
+## ⚠️ The 12GB memory wall (READ before scaling base config)
+
+- base config's training unroll encodes the whole envs×segment rollout
+  through the 8-layer transformer; without help the retained attention/FF
+  activations need ~18GB. The fix (already wired): `encode_frames()` splits
+  the flattened batch into `--chunk`-sized mini-batches AND gradient-
+  checkpoints each, so backprop peak ≈ one chunk's forward. **Keep
+  `--chunk ≤ 256`; 512 overflows.** bf16 autocast halves activations and
+  speeds up the Blackwell card.
+- WSL2 GPU has system-memory fallback ON (Task Manager shows "12GB
+  dedicated + 8GB shared"). CUDA silently spills past 12GB into the 8GB
+  shared pool over PCIe instead of OOM-ing — runs 20–50× slower, looks like
+  a hang, not a crash. We confirmed it (allocated 15GB on a 12GB card).
+  Flipping NVIDIA Control Panel → CUDA Sysmem Fallback Policy → "Prefer No
+  Sysmem Fallback" did NOT take effect (likely needs `wsl --shutdown`). We
+  don't rely on it: keep peak under 12GB via `--chunk` and detect spills by
+  watching wall-time (a spilling update is ~20× slower than an in-VRAM one).
+
 ## Where to pick up (desktop session)
 
-1. Smoke: `nvidia-smi` in WSL2; build vendor binary; venv with CUDA torch;
-   `python -m broguebot.nn.train_ppo --config base --device cuda --envs 16
-   --updates 20` should print healthy steps/s.
-2. Measure env throughput here; if GIL-bound, shard into N processes ×
-   VectorEnv(M) feeding one learner (the model API already separates
-   encode/memory for this).
+1. ✅ DONE. Smoke passed: GPU/binary/venv all good; base-config PPO trains
+   on CUDA. Found + fixed a 12GB memory wall (bf16 + chunked grad-
+   checkpointing — see the memory-wall section above). Healthy run now:
+   `python -m broguebot.nn.train_ppo --config base --device cuda --envs 64
+   --segment 128` → ~267 steps/s at ~6GB VRAM.
+2. ✅ DONE (mostly). Env throughput ~2,950 steps/s — not the bottleneck.
+   The learner (sequential GRU unroll) caps end-to-end at ~280 sps. If we
+   want more, the lever is the unroll, not env sharding: batch the GRU/heads
+   over time or move to the Transformer-XL block noted below. Multi-process
+   VectorEnv sharding only helps once the learner is faster.
 3. Warm-start decision: generate scripted-bot trajectories through the IPC
    env for UI mechanics (needs a small adapter driving `Brain` from frames,
    not yet written), BC on them, then PPO with `--init`. ALWAYS run a

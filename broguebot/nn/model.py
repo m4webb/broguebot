@@ -14,6 +14,7 @@ next-depth/hp prediction to densify gradients.
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from ..env import NUM_ACTIONS
 from .featurize import (GLYPH_VOCAB, ITEM_FEATS, MON_FEATS, MSG_BUCKETS,
@@ -85,6 +86,14 @@ class BroguePolicy(nn.Module):
         nn.init.trunc_normal_(self.slot_emb, std=0.02)
         nn.init.trunc_normal_(self.cls, std=0.02)
 
+        # Training-time memory controls (no effect on single-step inference).
+        # encode_chunk caps how many flattened (B*T) frames go through the
+        # encoder at once; grad_checkpoint recomputes encoder activations in
+        # backward instead of storing them. Together they bound the activation
+        # memory of unroll()/masked_unroll() so base config fits in 12GB.
+        self.grad_checkpoint = False
+        self.encode_chunk = 0   # 0 = whole batch at once
+
     def initial_state(self, batch: int, device=None) -> torch.Tensor:
         return torch.zeros(batch, self.cfg.gru_dim, device=device)
 
@@ -120,6 +129,31 @@ class BroguePolicy(nn.Module):
         x = self.encoder(x)
         return x[:, 0]                                  # CLS readout
 
+    def encode_frames(self, flat: dict) -> torch.Tensor:
+        """Encode a flattened (B*T, ...) batch of frames -> (B*T, d).
+
+        Honors self.encode_chunk (mini-batch the encoder to bound peak) and
+        self.grad_checkpoint (recompute encoder activations in backward).
+        Chunking alone keeps the full graph; checkpointing alone keeps peak
+        recompute at the full batch — only the two together bound memory, so
+        chunking implies checkpointing here. Single-step forward() bypasses
+        this entirely.
+        """
+        ckpt = self.grad_checkpoint and torch.is_grad_enabled()
+        B = flat["glyphs"].shape[0]
+        cs = self.encode_chunk or B
+        if cs >= B and not ckpt:
+            return self.encode_frame(flat)
+        outs = []
+        for i in range(0, B, cs):
+            sub = {k: v[i:i + cs] for k, v in flat.items()}
+            if ckpt:
+                outs.append(checkpoint(self.encode_frame, sub,
+                                       use_reentrant=False))
+            else:
+                outs.append(self.encode_frame(sub))
+        return torch.cat(outs, 0)
+
     def forward(self, obs: dict, hidden: torch.Tensor):
         """One timestep. Returns (logits, value, aux, new_hidden)."""
         z = self.encode_frame(obs)
@@ -136,7 +170,7 @@ class BroguePolicy(nn.Module):
         """
         B, T = obs_seq["glyphs"].shape[:2]
         flat = {k: v.reshape(B * T, *v.shape[2:]) for k, v in obs_seq.items()}
-        z = self.encode_frame(flat).reshape(B, T, -1)
+        z = self.encode_frames(flat).reshape(B, T, -1)
         logits, values = [], []
         for t in range(T):
             hidden = self.memory(z[:, t], hidden)
