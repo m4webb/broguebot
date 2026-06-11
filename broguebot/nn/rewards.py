@@ -87,10 +87,28 @@ def dense_reward(prev, cur, info) -> float:
     return r
 
 
+def deep_reward(prev, cur, info, k: float = 1.0) -> float:
+    """Like default, but the depth bonus scales WITH depth: reaching a new
+    deepest level L pays k*L (so 4->5 pays 5) instead of a flat 1. The hard
+    frontier is worth far more than shallow progress, amplifying PPO's gradient
+    from the rare successful deep descents to try to push past the ~3.6 plateau.
+    Event-based (each new deepest pays once) so not farmable; and since reaching
+    deep requires surviving, it rewards successful descent, not suicide."""
+    r = -0.0005
+    if prev is not None:
+        for L in range(prev.stats.deepest + 1, cur.stats.deepest + 1):
+            r += k * L
+        r += 0.0001 * max(0, cur.stats.gold - prev.stats.gold)
+    if info.get("won"):
+        r += 10.0
+    return r
+
+
 REWARDS = {
     "default": default_reward,
     "explore": explore_reward,
     "survival": survival_reward,
     "dense": dense_reward,
     "hp": hp_reward,
+    "deep": deep_reward,
 }
