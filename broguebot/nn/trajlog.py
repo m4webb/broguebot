@@ -61,9 +61,17 @@ def load_episode(path: str) -> dict:
     return ep
 
 
-def episode_files(data_dir: str) -> list[str]:
-    return sorted(os.path.join(data_dir, f) for f in os.listdir(data_dir)
-                  if f.endswith(".npz"))
+def load_meta(path: str) -> dict:
+    """Read just an episode's metadata (cheap: skips the frame array)."""
+    return json.loads(bytes(np.load(path)["meta"]).decode())
+
+
+def episode_files(data_dir: str, skip_truncated: bool = False) -> list[str]:
+    files = sorted(os.path.join(data_dir, f) for f in os.listdir(data_dir)
+                   if f.endswith(".npz"))
+    if skip_truncated:
+        files = [f for f in files if not load_meta(f).get("truncated")]
+    return files
 
 
 def collect(env, actor, writer: TrajectoryWriter, episodes: int,

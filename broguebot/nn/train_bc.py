@@ -73,6 +73,9 @@ def main():
                     "sets backprop peak memory — keep ~128 to stay in 12GB")
     ap.add_argument("--compile", action="store_true",
                     help="torch.compile the encoder (~1.2x; adds startup cost)")
+    ap.add_argument("--skip-truncated", action=argparse.BooleanOptionalAction,
+                    default=True, help="drop episodes that hit the step cap "
+                    "(stuck loops) rather than ending naturally")
     args = ap.parse_args()
     dev = args.device
 
@@ -81,7 +84,7 @@ def main():
             return torch.autocast("cuda", dtype=torch.bfloat16)
         return contextlib.nullcontext()
 
-    files = episode_files(args.data)
+    files = episode_files(args.data, skip_truncated=args.skip_truncated)
     if not files:
         raise SystemExit(f"no episodes in {args.data}")
     print(f"{len(files)} episodes, device={args.device}")
