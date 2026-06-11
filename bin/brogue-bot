@@ -1,0 +1,71 @@
+#!/bin/bash
+# brogue-bot — launch Brogue CE with an AI overlay in tmux.
+#
+#   brogue-bot [play] [--seed N] [--wizard] [--delay SECS]   watch the bot play
+#   brogue-bot tune -n 20        run headless games for tuning (no UI)
+#   brogue-bot stats             summarize recorded runs
+#
+# Games run with their data sandboxed in gamedata/ — your personal Brogue
+# scores, saves and recordings (~/.local/share/brogue-ce) are never touched.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SESSION=broguebot
+BROGUE=/opt/brogue-ce/brogue
+GAMEDATA="$ROOT/gamedata"
+# prefer the bot-built binary (ready-sentinel patch -> snappy, exact sync)
+BOTBIN="$ROOT/vendor/BrogueCE-1.15.1/bin/brogue"
+if [[ -x "$BOTBIN" ]]; then
+    BROGUE="env BROGUE_READY_FILE=$GAMEDATA/ready.flag $BOTBIN"
+fi
+
+cmd="${1:-play}"
+if [[ "$cmd" != "play" ]]; then
+    cd "$ROOT" && exec python3 -m broguebot "$@"
+fi
+[[ $# -gt 0 ]] && shift  # drop "play"
+
+mkdir -p "$GAMEDATA" "$ROOT/logs"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    if [[ -n "${TMUX:-}" ]]; then exec tmux switch-client -t "$SESSION"
+    else exec tmux attach -t "$SESSION"; fi
+fi
+
+# terminal geometry (brogue needs >= 100x34)
+if [[ -n "${TMUX:-}" ]]; then
+    read -r COLS LINES_ < <(tmux display -p '#{client_width} #{client_height}')
+else
+    COLS=$(tput cols); LINES_=$(tput lines)
+fi
+if (( COLS < 102 || LINES_ < 34 )); then
+    echo "terminal too small for Brogue (need >=102x34, have ${COLS}x${LINES_})" >&2
+    exit 1
+fi
+
+tmux new-session -d -s "$SESSION" -x "$COLS" -y "$LINES_" -c "$GAMEDATA" \
+    "exec $BROGUE -t -E -n"
+tmux set-option -t "$SESSION" remain-on-exit on
+tmux set-option -t "$SESSION" mouse on
+GAMEPANE=$(tmux display -p -t "$SESSION" '#{pane_id}')
+
+# dashboard pane: beside the game if the terminal is wide, else below it
+if (( COLS >= 135 )); then
+    DASHPANE=$(tmux split-window -h -t "$SESSION" -P -F '#{pane_id}' \
+        -c "$ROOT" "python3 -m broguebot play --pane $GAMEPANE $*; exec bash")
+    tmux resize-pane -t "$GAMEPANE" -x 100
+elif (( LINES_ >= 42 )); then
+    DASHPANE=$(tmux split-window -v -t "$SESSION" -P -F '#{pane_id}' \
+        -c "$ROOT" "python3 -m broguebot play --pane $GAMEPANE $*; exec bash")
+    tmux resize-pane -t "$GAMEPANE" -y 34
+else
+    tmux new-window -t "$SESSION" -c "$ROOT" \
+        "python3 -m broguebot play --pane $GAMEPANE $*; exec bash"
+    tmux select-window -t "$SESSION:0"
+    DASHPANE=""
+fi
+[[ -n "$DASHPANE" ]] && tmux select-pane -t "$DASHPANE"
+
+if [[ -n "${TMUX:-}" ]]; then exec tmux switch-client -t "$SESSION"
+else exec tmux attach -t "$SESSION"; fi

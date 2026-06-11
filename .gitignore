@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+gamedata/
+logs/
+runs/
+data/
+vendor/**/*.o
+vendor/BrogueCE-1.15.1/bin/brogue
+core.*

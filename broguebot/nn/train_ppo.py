@@ -1,0 +1,162 @@
+"""Recurrent PPO over vectorized BrogueEnvs.
+
+Single process: N threaded envs collect a T-step segment, then PPO
+updates with GAE. Hidden states are carried across segments and reset at
+episode boundaries (also masked during the training-time re-unroll).
+Optionally initialize from a BC checkpoint (--init): initialization only,
+no KL tether — the optimizer is free to leave the prior behind.
+
+  .venv/bin/python -m broguebot.nn.train_ppo --out runs/ppo --envs 8
+"""
+
+import argparse
+import os
+import time
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from ..env import VectorEnv, wipe_gamedata
+from .featurize import batch as batch_feats, featurize
+from .model import BroguePolicy, Config, count_params
+
+
+def masked_unroll(model, obs_seq, hidden, dones):
+    """Like model.unroll but resets hidden where dones[t-1] is set."""
+    B, T = obs_seq["glyphs"].shape[:2]
+    flat = {k: v.reshape(B * T, *v.shape[2:]) for k, v in obs_seq.items()}
+    z = model.encode_frame(flat).reshape(B, T, -1)
+    logits, values = [], []
+    for t in range(T):
+        if t > 0:
+            keep = (~dones[:, t - 1]).float().unsqueeze(-1)
+            hidden = hidden * keep
+        hidden = model.memory(z[:, t], hidden)
+        h = model.post(torch.cat([hidden, z[:, t]], dim=-1))
+        logits.append(model.policy_head(h))
+        values.append(model.value_head(h).squeeze(-1))
+    return torch.stack(logits, 1), torch.stack(values, 1)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="runs/ppo")
+    ap.add_argument("--config", default="small", choices=["small", "base"])
+    ap.add_argument("--init", help="BC checkpoint to start from")
+    ap.add_argument("--envs", type=int, default=8)
+    ap.add_argument("--segment", type=int, default=128)
+    ap.add_argument("--updates", type=int, default=10000)
+    ap.add_argument("--epochs", type=int, default=2)
+    ap.add_argument("--lr", type=float, default=2.5e-4)
+    ap.add_argument("--gamma", type=float, default=0.999)
+    ap.add_argument("--lam", type=float, default=0.95)
+    ap.add_argument("--clip", type=float, default=0.2)
+    ap.add_argument("--entropy", type=float, default=0.01)
+    ap.add_argument("--gamedata", default="gamedata/ppo")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
+                    else "cpu")
+    args = ap.parse_args()
+    dev = args.device
+
+    model = BroguePolicy(getattr(Config, args.config)()).to(dev)
+    if args.init:
+        ckpt = torch.load(args.init, map_location=dev)
+        model.load_state_dict(ckpt["model"])
+        print("initialized from", args.init)
+    print(f"params: {count_params(model)/1e6:.2f}M device={dev}")
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
+    os.makedirs(args.out, exist_ok=True)
+
+    wipe_gamedata(args.gamedata)
+    vec = VectorEnv(args.envs, args.gamedata)
+    frames = vec.reset()
+    hidden = model.initial_state(args.envs, dev)
+    ep_returns, ep_depths = [], []
+    N, T = args.envs, args.segment
+
+    for update in range(1, args.updates + 1):
+        t0 = time.time()
+        buf_obs, buf_act, buf_logp, buf_val, buf_rew, buf_done = \
+            [], [], [], [], [], []
+        seg_hidden = hidden.detach()
+        with torch.no_grad():
+            for _ in range(T):
+                feats = batch_feats([featurize(f.raw) for f in frames])
+                obs = {k: torch.as_tensor(v, device=dev)
+                       for k, v in feats.items()}
+                logits, value, _aux, hidden = model(obs, hidden)
+                dist = torch.distributions.Categorical(logits=logits)
+                act = dist.sample()
+                results = vec.step(act.tolist())
+                frames = [r[0] for r in results]
+                rew = torch.tensor([r[1] for r in results], device=dev)
+                done = torch.tensor([r[2] for r in results], device=dev)
+                hidden = hidden * (~done).float().unsqueeze(-1)
+                for r in results:
+                    if r[2]:
+                        ep_returns.append(r[3].get("episode_return", 0.0))
+                        ep_depths.append(r[3].get("depth", 1))
+                buf_obs.append(feats)
+                buf_act.append(act)
+                buf_logp.append(dist.log_prob(act))
+                buf_val.append(value)
+                buf_rew.append(rew)
+                buf_done.append(done)
+            feats = batch_feats([featurize(f.raw) for f in frames])
+            obs = {k: torch.as_tensor(v, device=dev)
+                   for k, v in feats.items()}
+            _, last_value, _, _ = model(obs, hidden)
+
+        acts = torch.stack(buf_act, 1)              # N,T
+        logps = torch.stack(buf_logp, 1)
+        vals = torch.stack(buf_val, 1)
+        rews = torch.stack(buf_rew, 1)
+        dones = torch.stack(buf_done, 1)
+        obs_seq = {k: torch.as_tensor(
+            np.stack([b[k] for b in buf_obs], axis=1), device=dev)
+            for k in buf_obs[0]}
+
+        adv = torch.zeros_like(rews)
+        last_gae = torch.zeros(N, device=dev)
+        next_val = last_value
+        for t in reversed(range(T)):
+            mask = (~dones[:, t]).float()
+            delta = rews[:, t] + args.gamma * next_val * mask - vals[:, t]
+            last_gae = delta + args.gamma * args.lam * mask * last_gae
+            adv[:, t] = last_gae
+            next_val = vals[:, t]
+        ret = adv + vals
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+
+        for _ in range(args.epochs):
+            logits, values = masked_unroll(model, obs_seq, seg_hidden, dones)
+            dist = torch.distributions.Categorical(logits=logits)
+            new_logp = dist.log_prob(acts)
+            ratio = (new_logp - logps).exp()
+            pg = -torch.min(
+                ratio * adv,
+                ratio.clamp(1 - args.clip, 1 + args.clip) * adv).mean()
+            v_loss = F.mse_loss(values, ret)
+            ent = dist.entropy().mean()
+            loss = pg + 0.5 * v_loss - args.entropy * ent
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            opt.step()
+
+        if update % 5 == 0 or update == 1:
+            sps = N * T / (time.time() - t0)
+            rs, ds = ep_returns[-50:] or [0], ep_depths[-50:] or [1]
+            print(f"upd {update}: loss {loss.item():.3f} ent {ent.item():.2f} "
+                  f"ret {sum(rs)/len(rs):.2f} depth {sum(ds)/len(ds):.2f} "
+                  f"eps {len(ep_returns)} ({sps:.0f} sps)", flush=True)
+        if update % 50 == 0:
+            torch.save({"model": model.state_dict(),
+                        "config": args.config},
+                       os.path.join(args.out, "ppo.pt"))
+    vec.close()
+
+
+if __name__ == "__main__":
+    main()
