@@ -131,6 +131,53 @@ observation channel. This file is the handoff between the laptop session
    Transformer-XL on the 5070; frame could carry a fairness-safe
    per-cell gas/water tint channel if RGB proves noisy to learn from.
 
+## Results & findings (training sessions 2–3)
+
+**Best policy so far: scripted-warm-start PPO = avg depth ~3.64** (50-game fixed-
+seed eval, max 6). Pipeline: `gen_scripted` (500 eps) → `train_bc` (acc ~65%,
+eval 2.80) → `train_ppo --init` (3.64). Cold-start PPO FAILS completely (stuck
+~depth 1: sparse depth reward is never reached from random) — so warm-start is
+**essential**, not just a speedup. PPO lifts the clone above the teacher.
+
+The 3.64 **plateau is a combat-tactics ceiling** (reached by ~update 40, flat to
+300+). It dies to mid-tier monsters across depths 2–6 — biggest cluster is eels
+at depth 2 (water ambush; submerged eels are fairly invisible, so avoiding them
+needs MEMORY of a past sighting — the GRU v1 likely can't hold that). Gas is
+largely solved by PPO. Greedy eval (temp 0.5) = 3.40, so 3.64 isn't a sampling
+artifact.
+
+**What was tried and did NOT beat 3.64:**
+- Reward shaping (`rewards.py`, `--reward`): explore (bonus-hacks: farms the
+  cell-reveal proxy, depth falls), hp/damage-penalty (3.20, over-cautious),
+  deep/progressive (≤3.5, unstable). 3.64 (depth-only) is a balanced optimum;
+  shaping pushes it off-balance. Shape on EVENTS, not farmable per-step states.
+- More training: 500-update run = 3.54, no headroom.
+- DAgger (refine scripted teacher): augmented-BC went to 2.55 (worse base).
+- **Human winning-recording imitation** (big effort, NEGATIVE result): downloaded
+  32 CE 1.15.1 WINS from WebBrogue (`api/games?variant=BROGUECEV151&result=2`,
+  `api/recordings/<id>`), patched the IPC binary to export (frame,action) during
+  native `.broguerec` playback (`bbReplayExport` in ipc-platform.c, hooked in
+  IO.c `nextBrogueEvent`; `replay_extract.py`). Extracted 569k pairs reaching
+  depth 26. But keystroke-BC = depth 1 (pure) / 1.77 (mixed with scripted), both
+  WORSE than scripted-BC 2.80. CAUSE: action-style mismatch — humans navigate
+  manually (raw hjkl, `>` ~0.2% of keys, no auto-explore); our policy relies on
+  the game's `x`/`>` commands. The data is real winning play but doesn't transfer
+  to our action vocabulary. Tooling kept (`replay_extract.py`, the C patch) in
+  case a future approach can use it.
+
+**Next levers (unproven, bigger efforts):** Transformer-XL memory over the GRU
+(for eel/water "I saw it N turns ago" recall) is the most pointed; then capacity;
+then proper multi-round DAgger for the rest-when-hurt gap. Reward shaping and
+human-keystroke-imitation are exhausted.
+
+**⚠️ Host RAM is only 16GB (WSL2 gets ~15GB cap, but Windows needs ~11GB → WSL
+must stay under ~5GB or the VM OOM-crashes the whole session).** Keep training
+lean: PPO `--envs 32` (not 64), and re-chunk any huge episodes before BC (human
+recordings are ~14k frames each → `logs/day2/rechunk_human.py` splits them into
+~512-frame pieces; never load the raw `data/human_bc`). A RAM watchdog
+(`logs/day2/ram_watchdog.sh`) kills training if WSL available RAM drops below
+10GB, converting an OOM into a recoverable kill.
+
 ## Conventions
 
 - Python 3.12+; venv at `.venv`; no system pip installs.
