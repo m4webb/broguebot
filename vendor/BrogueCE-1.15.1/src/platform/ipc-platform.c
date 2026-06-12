@@ -304,6 +304,29 @@ static void bb_emitFrame(unsigned char type) {
     bb_writeAll(f, sizeof(*f));
 }
 
+/* ------------------------------------------------ recording-replay export */
+
+/* When replaying a .broguerec under the IPC console (BROGUE_REPLAY_EXPORT set),
+ * emit the display frame the human saw followed by the action they took, so we
+ * can build (frame, action) imitation data from human games. Called from
+ * nextBrogueEvent's playback branch right after recallEvent reads the event.
+ * Wire format: one obs frame, then an 11-byte event record:
+ *   u8 eventType, i32 param1, i32 param2, u8 controlKey, u8 shiftKey  */
+void bbReplayExport(const rogueEvent *e) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("BROGUE_REPLAY_EXPORT") ? 1 : 0;
+    if (!enabled || bb_outFd < 0) return;
+    bb_emitFrame(BB_TYPE_OBS);
+    unsigned char ev[11];
+    int p1 = (int) e->param1, p2 = (int) e->param2;
+    ev[0] = (unsigned char) e->eventType;
+    memcpy(ev + 1, &p1, 4);
+    memcpy(ev + 5, &p2, 4);
+    ev[9] = e->controlKey ? 1 : 0;
+    ev[10] = e->shiftKey ? 1 : 0;
+    bb_writeAll(ev, sizeof(ev));
+}
+
 /* ------------------------------------------------------------ hooks */
 
 static void ipc_gameLoop(void) {

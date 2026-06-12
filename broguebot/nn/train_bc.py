@@ -95,7 +95,9 @@ def main():
             return torch.autocast("cuda", dtype=torch.bfloat16)
         return contextlib.nullcontext()
 
-    files = episode_files(args.data, skip_truncated=args.skip_truncated)
+    files = []
+    for d in args.data.split(","):
+        files += episode_files(d.strip(), skip_truncated=args.skip_truncated)
     if not files:
         raise SystemExit(f"no episodes in {args.data}")
     print(f"{len(files)} episodes, device={args.device}")

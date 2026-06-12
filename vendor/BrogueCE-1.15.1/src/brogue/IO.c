@@ -2411,6 +2411,9 @@ void nextBrogueEvent(rogueEvent *returnEvent, boolean textInput, boolean colorsD
         } while ((repeatAgain || rogue.playbackOOS) && !rogue.gameHasEnded);
         rogue.playbackDelayThisTurn = rogue.playbackDelayPerTurn;
         recallEvent(returnEvent);
+#ifdef BROGUE_IPC
+        { extern void bbReplayExport(const rogueEvent *e); bbReplayExport(returnEvent); }
+#endif
     } else {
         commitDraws();
         if (rogue.creaturesWillFlashThisTurn) {
