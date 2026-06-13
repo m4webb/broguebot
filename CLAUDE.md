@@ -178,15 +178,35 @@ but OVERFIT (eval 2.62 < 2.80). PPO from that confident base collapses at the
 normal LR (the value head is untrained by BC → random value fn) — `--lr 1e-4`
 stabilizes it and reaches **3.42** (just under 3.64).
 
-**Next steps to break 3.64 (ranked, ATTENDED — carry GPU/RAM risk):**
-1. **Train the value head during BC** (add a value-regression loss on trajlog
-   returns) so PPO starts with a calibrated value fn — likely lets full-LR PPO
-   work from a memory-using base. *Cheapest, highest-leverage; the clear next try.*
-2. **Stateful BC** — carry hidden across consecutive windows so memory is learned
-   without the overfitting that long windows cause.
-3. Regularize the long-window BC (dropout / early-stop ~70% acc).
-4. **Transformer-XL** memory over the GRU; entropy schedule.
-Reward shaping and human-keystroke imitation are exhausted (both < 3.64).
+**★★ MEMORY DIRECTION CLOSED — rigorous NEGATIVE result (day3).** Pursued the
+memory hypothesis to the end and it does NOT pay off on mean depth:
+- **Value-head BC** (value-regression loss during BC, `--value-coef`) → fixed the
+  PPO-from-confident-base collapse (stable full-LR PPO). vh_ppo eval 3.38.
+- **Stateful BC** (`--stateful`: streaming truncated-BPTT, hidden carried across
+  windows; `train_bc.py`) → produced the cleanest base yet: memory-USING (54%
+  reactive vs 96%), value-calibrated, NON-overfit (held-out val acc 0.557 via
+  `--val-frac`). PPO from it was stable + climbed fast (3.18@upd50 vs vh's 1.82).
+- BUT the rigorous **200-game head-to-head (same seeds)**: scripted-PPO **3.710**
+  vs memory-PPO **3.535** (fair budget + `ppo_best.pt` best-checkpoint selection;
+  consistent ~0.18 gap). Memory made the policy HIGHER-VARIANCE — higher ceiling
+  (max 8–9 vs 7) but a HEAVY early-death tail (45/200 = 22.5% die at depth 2).
+  On the MEAN, the reactive policy's consistency wins. Reducing reactivity raised
+  the ceiling, not the mean. **So "96% reactive" was a real property but NOT the
+  lever.** Memory closed as negative — like reward-shaping & human-imitation.
+
+**The REAL ceiling = the depth-2 death tail (eels/water ambush, combat
+consistency)** — the original killer, which memory was supposed to fix but
+doesn't. Next ideas (all UNTRIED on this bottleneck, ATTENDED):
+1. **Attack early-game consistency directly** — the 22.5% depth-2 deaths are the
+   biggest single loss. Diagnose what kills them (eel ambush? gas? combat?) and
+   shape/train against THAT specific failure, not a generic proxy.
+2. **Better/deeper BC teacher** — scripted bot reaches depth 3–6; the BC base may
+   cap PPO. A stronger teacher (or self-play curriculum) could lift the floor.
+3. **Entropy annealing** in PPO — day3 found the constant 0.01 bonus over-explores
+   late in long runs (best plateaued, entropy drifted 1.7→2.4). A schedule may let
+   the proven scripted-PPO recipe squeeze past 3.71.
+Reward shaping, human-keystroke imitation, AND the memory direction are exhausted.
+BEST policy remains **scripted-PPO 3.71** (`runs/ppo_warm/ppo.pt`).
 
 **⚠️ Host RAM is only 16GB (WSL2 gets ~15GB cap, but Windows needs ~11GB → WSL
 must stay under ~5GB or the VM OOM-crashes the whole session).** Keep training
