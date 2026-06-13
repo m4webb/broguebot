@@ -165,10 +165,28 @@ artifact.
   to our action vocabulary. Tooling kept (`replay_extract.py`, the C patch) in
   case a future approach can use it.
 
-**Next levers (unproven, bigger efforts):** Transformer-XL memory over the GRU
-(for eel/water "I saw it N turns ago" recall) is the most pointed; then capacity;
-then proper multi-round DAgger for the rest-when-hurt gap. Reward shaping and
-human-keystroke-imitation are exhausted.
+**★ MEMORY is the diagnosed bottleneck (session 3, measured not guessed).** Audited
+the model/training for bugs — all CORRECT (model overfits a tiny set fine;
+training-time recurrent unroll reproduces the collection policy to 2e-5; value
+head varies sensibly). The real issue: the 3.64 policy is **96% REACTIVE** — it
+picks the same action with vs without its hidden state 96% of the time, i.e.
+barely uses memory. Root cause: BC teacher-forces short 32–48-step windows from
+a ZERO hidden state, so the GRU never learns long-range memory. On a game needing
+memory (eel-near-water recall, layout), a near-memoryless policy plateaus.
+Long-window (128) BC raised memory-use (96%→82% reactive) and imitation (65%→81%)
+but OVERFIT (eval 2.62 < 2.80). PPO from that confident base collapses at the
+normal LR (the value head is untrained by BC → random value fn) — `--lr 1e-4`
+stabilizes it and reaches **3.42** (just under 3.64).
+
+**Next steps to break 3.64 (ranked, ATTENDED — carry GPU/RAM risk):**
+1. **Train the value head during BC** (add a value-regression loss on trajlog
+   returns) so PPO starts with a calibrated value fn — likely lets full-LR PPO
+   work from a memory-using base. *Cheapest, highest-leverage; the clear next try.*
+2. **Stateful BC** — carry hidden across consecutive windows so memory is learned
+   without the overfitting that long windows cause.
+3. Regularize the long-window BC (dropout / early-stop ~70% acc).
+4. **Transformer-XL** memory over the GRU; entropy schedule.
+Reward shaping and human-keystroke imitation are exhausted (both < 3.64).
 
 **⚠️ Host RAM is only 16GB (WSL2 gets ~15GB cap, but Windows needs ~11GB → WSL
 must stay under ~5GB or the VM OOM-crashes the whole session).** Keep training
