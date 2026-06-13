@@ -97,6 +97,8 @@ def main():
     frames = vec.reset()
     hidden = model.initial_state(args.envs, dev)
     ep_returns, ep_depths = [], []
+    best_depth = 0.0   # best smoothed eval depth -> ppo_best.pt (the trace
+                       # oscillates, so the last %50 checkpoint is often a trough)
     N, T = args.envs, args.segment
 
     for update in range(1, args.updates + 1):
@@ -189,6 +191,17 @@ def main():
             torch.save({"model": model.state_dict(),
                         "config": args.config},
                        os.path.join(args.out, "ppo.pt"))
+            # also keep the highest smoothed-depth checkpoint (>=100 eps so the
+            # average is meaningful), since ppo.pt may land on an oscillation trough
+            smooth = sum(ep_depths[-100:]) / len(ep_depths[-100:]) \
+                if ep_depths else 0.0
+            if len(ep_depths) >= 100 and smooth > best_depth:
+                best_depth = smooth
+                torch.save({"model": model.state_dict(), "config": args.config,
+                            "smooth_depth": smooth, "update": update},
+                           os.path.join(args.out, "ppo_best.pt"))
+                print(f"  [best] depth {smooth:.2f} @ upd {update} -> ppo_best.pt",
+                      flush=True)
     vec.close()
 
 
