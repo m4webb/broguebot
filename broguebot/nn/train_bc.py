@@ -78,6 +78,64 @@ class WindowSampler:
                 torch.as_tensor(np.stack(rets)))
 
 
+class StreamSampler:
+    """Streaming (stateful) sampler for truncated-BPTT BC.
+
+    Keeps `batch` parallel cursors, each walking one episode front-to-back in
+    fixed `window`-sized steps. Across training steps the caller carries the
+    GRU hidden forward per row (detached = truncated BPTT) and zeroes it only
+    where `reset` is True (a row that just (re)started an episode). So the
+    hidden state accumulates over the WHOLE episode prefix while backprop spans
+    only `window` steps — memory-use without the long-fixed-window overfit.
+    Windows never straddle an episode boundary, so no in-window done masking.
+    """
+
+    def __init__(self, files: list[str], window: int, batch: int,
+                 cache: int = 64, gamma: float = 0.999):
+        self.files = files
+        self.window = window
+        self.batch = batch
+        self.gamma = gamma
+        self.cache = {}
+        self.cache_max = max(cache, batch * 2)
+        self.rng = random.Random(0)
+        self.eps = [None] * batch       # current episode per stream
+        self.cursor = [0] * batch
+        self.fresh = [True] * batch     # just (re)started -> zero hidden
+
+    _episode = WindowSampler._episode    # same caching + returns computation
+
+    def _assign(self, i: int):
+        while True:
+            ep = self._episode(self.rng.choice(self.files))
+            if len(ep["actions"]) >= self.window:
+                self.eps[i], self.cursor[i], self.fresh[i] = ep, 0, True
+                return
+
+    def sample(self):
+        """Returns (obs(B,W,...), acts(B,W), rets(B,W), reset(B,) bool)."""
+        obs, acts, rets, reset = [], [], [], []
+        for i in range(self.batch):
+            if (self.eps[i] is None or
+                    self.cursor[i] + self.window > len(self.eps[i]["actions"])):
+                self._assign(i)
+            ep = self.eps[i]
+            s = self.cursor[i]
+            e = s + self.window
+            feats = [featurize(ep["frames"][t].tobytes()) for t in range(s, e)]
+            obs.append(batch_feats(feats))
+            acts.append(ep["actions"][s:e].astype(np.int64))
+            rets.append(ep["returns"][s:e])
+            reset.append(self.fresh[i])
+            self.cursor[i] = e
+            self.fresh[i] = False
+        out = {k: torch.as_tensor(np.stack([o[k] for o in obs]))
+               for k in obs[0]}
+        return (out, torch.as_tensor(np.stack(acts)),
+                torch.as_tensor(np.stack(rets)),
+                torch.tensor(reset, dtype=torch.bool))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
@@ -106,6 +164,13 @@ def main():
                     "(MSE) — calibrates it so PPO --init doesn't start with a "
                     "random value fn (fixes PPO-from-confident-base collapse)")
     ap.add_argument("--gamma", type=float, default=0.999)
+    ap.add_argument("--stateful", action="store_true",
+                    help="streaming truncated-BPTT BC: carry GRU hidden across "
+                    "consecutive windows of each episode (memory-use without "
+                    "long-fixed-window overfit). Use a short --window (16-32).")
+    ap.add_argument("--val-frac", type=float, default=0.1,
+                    help="fraction of episodes held out to measure the "
+                    "train/val accuracy gap (overfitting); 0 disables")
     args = ap.parse_args()
     dev = args.device
 
@@ -119,8 +184,44 @@ def main():
         files += episode_files(d.strip(), skip_truncated=args.skip_truncated)
     if not files:
         raise SystemExit(f"no episodes in {args.data}")
-    print(f"{len(files)} episodes, device={args.device}")
-    sampler = WindowSampler(files, args.window, gamma=args.gamma)
+    # held-out split (by episode) to measure the overfitting gap
+    random.Random(1234).shuffle(files)
+    n_val = int(len(files) * args.val_frac)
+    val_files = files[:n_val]
+    train_files = files[n_val:] or files
+    print(f"{len(files)} episodes ({len(train_files)} train / {len(val_files)} "
+          f"val), device={args.device}, "
+          f"mode={'stateful' if args.stateful else 'window'}")
+
+    def make_sampler(fs):
+        if args.stateful:
+            return StreamSampler(fs, args.window, args.batch, gamma=args.gamma)
+        return WindowSampler(fs, args.window, gamma=args.gamma)
+
+    sampler = make_sampler(train_files)
+    val_sampler = make_sampler(val_files) if val_files else None
+
+    @torch.no_grad()
+    def val_acc(n=20):
+        if val_sampler is None:
+            return float("nan")
+        model.eval()
+        h = (model.initial_state(args.batch, dev) if args.stateful else None)
+        accs = []
+        for _ in range(n):
+            if args.stateful:
+                vo, va, _vr, vreset = val_sampler.sample()
+                hid = h.detach() * (~vreset).to(dev).float().unsqueeze(-1)
+            else:
+                vo, va, _vr = val_sampler.sample(args.batch)
+                hid = model.initial_state(args.batch, dev)
+            vo = {k: v.to(dev) for k, v in vo.items()}
+            va = va.to(dev)
+            with amp_ctx():
+                vl, _vv, h = model.unroll(vo, hid)
+            accs.append((vl.float().argmax(-1) == va).float().mean().item())
+        model.train()
+        return sum(accs) / len(accs)
 
     model = BroguePolicy(getattr(Config, args.config)()).to(args.device)
     model.grad_checkpoint = args.grad_checkpoint
@@ -134,14 +235,30 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     t0 = time.time()
+    # stateful mode carries one persistent hidden across training steps
+    # (truncated BPTT); window mode re-zeros it every step.
+    carry = (model.initial_state(args.batch, args.device)
+             if args.stateful else None)
+    best_val = -1.0
     for step in range(1, args.steps + 1):
-        obs, acts, rets = sampler.sample(args.batch)
+        if args.stateful:
+            obs, acts, rets, reset = sampler.sample()
+        else:
+            obs, acts, rets = sampler.sample(args.batch)
         obs = {k: v.to(args.device) for k, v in obs.items()}
         acts = acts.to(args.device)
         rets = rets.to(args.device)
-        hidden = model.initial_state(acts.shape[0], args.device)
+        if args.stateful:
+            # detach (cut BPTT at the window boundary) and zero rows that
+            # just (re)started an episode
+            keep = (~reset).to(args.device).float().unsqueeze(-1)
+            hidden = carry.detach() * keep
+        else:
+            hidden = model.initial_state(acts.shape[0], args.device)
         with amp_ctx():
-            logits, values, _ = model.unroll(obs, hidden)
+            logits, values, new_hidden = model.unroll(obs, hidden)
+        if args.stateful:
+            carry = new_hidden
         logits, values = logits.float(), values.float()
         ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
                              acts.reshape(-1))
@@ -155,14 +272,24 @@ def main():
         sched.step()
         if step % 50 == 0 or step == 1:
             acc = (logits.argmax(-1) == acts).float().mean().item()
-            print(f"step {step}: loss {ce.item():.3f} acc {acc:.3f} "
+            va = val_acc() if (step % 250 == 0 or step == 1) else None
+            vstr = f" val_acc {va:.3f}" if va is not None else ""
+            print(f"step {step}: loss {ce.item():.3f} acc {acc:.3f}{vstr} "
                   f"vloss {v_loss.item():.3f} "
                   f"({step/(time.time()-t0):.1f} it/s)", flush=True)
+            # keep the highest-val-acc checkpoint (pre-overfit), separate from
+            # the final one — the overfit base capped the last attempt
+            if va is not None and va > best_val:
+                best_val = va
+                torch.save({"model": model.state_dict(),
+                            "config": args.config, "val_acc": va, "step": step},
+                           os.path.join(args.out, "bc_best.pt"))
         if step % 500 == 0 or step == args.steps:
             torch.save({"model": model.state_dict(),
                         "config": args.config},
                        os.path.join(args.out, "bc.pt"))
-    print("saved", os.path.join(args.out, "bc.pt"))
+    print(f"saved {os.path.join(args.out, 'bc.pt')}; best val_acc {best_val:.3f} "
+          f"-> {os.path.join(args.out, 'bc_best.pt')}")
 
 
 if __name__ == "__main__":
