@@ -148,15 +148,18 @@ def stairs_reward(prev, cur, info, w_front: float = 0.0002,
         return r
     if prev.stats.depth != cur.stats.depth:
         st["maxexp"] = 0
-        st["smin"] = 999            # fresh level: reset frontier + stair distance
+        st["smin"] = None           # fresh level: reset frontier + stair distance
     n, player, stairs = _scan_map(cur)
     if n > st.get("maxexp", 0):
         r += w_front * (n - st.get("maxexp", 0))
         st["maxexp"] = n
     if stairs is not None and player is not None:
         d = abs(player[0] - stairs[0]) + abs(player[1] - stairs[1])
-        if d < st.get("smin", 999):
-            r += w_near * (st.get("smin", 999) - d)
+        smin = st.get("smin")
+        if smin is None:
+            st["smin"] = d          # first sighting: anchor distance, no reward
+        elif d < smin:
+            r += w_near * (smin - d)   # reward only genuine approach
             st["smin"] = d
     return r
 
