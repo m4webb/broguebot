@@ -860,6 +860,11 @@ boolean playerMoves(short direction) {
         return false;
     }
 
+#ifdef BROGUE_IPC
+    // export (pre-move display frame, direction) for manual-move imitation data
+    { extern void bbManualExport(short direction); bbManualExport(initialDirection); }
+#endif
+
     // Save thet keystroke up-front; we'll revert if the player cancels.
     recordKeystroke(directionKeys[initialDirection], false, false);
     boolean committed = false; // as long as this is false, the keystroke can be cancelled

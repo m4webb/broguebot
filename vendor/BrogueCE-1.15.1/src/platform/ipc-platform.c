@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "platform.h"
 #include "GlobalsBase.h"
@@ -277,7 +278,7 @@ static void bb_fillMessages(bb_message *out) {
     }
 }
 
-static void bb_emitFrame(unsigned char type) {
+static void bb_fillFrame(unsigned char type) {
     bb_frame *f = &bb_buf;
     f->header.magic = BB_MAGIC;
     f->header.type = type;
@@ -301,7 +302,36 @@ static void bb_emitFrame(unsigned char type) {
             o->bg[2] = (unsigned char) c->backColorComponents[2];
         }
     }
-    bb_writeAll(f, sizeof(*f));
+}
+
+static void bb_emitFrame(unsigned char type) {
+    bb_fillFrame(type);
+    bb_writeAll(&bb_buf, sizeof(bb_buf));
+}
+
+/* Manual-move export: when BB_MANUAL_EXPORT names a file, append one obs frame +
+ * one direction byte (0-7, Brogue's enum order) for every single-cell player
+ * move. Hooked in playerMoves(), so the scripted bot's autoexplore/travel (which
+ * call playerMoves once per turn under the hood) become per-turn (frame, manual
+ * move) imitation pairs — a strong deterministic teacher for macro-free play.
+ * Writes to its OWN fd, never the IPC stream. */
+void bbManualExport(short direction) {
+    static int fd = -2;            /* -2 unchecked, -1 disabled */
+    if (fd == -2) {
+        const char *p = getenv("BB_MANUAL_EXPORT");
+        fd = (p && *p) ? open(p, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
+    }
+    if (fd < 0 || direction < 0 || direction >= 8) return;
+    bb_fillFrame(BB_TYPE_OBS);
+    const unsigned char *buf = (const unsigned char *) &bb_buf;
+    size_t len = sizeof(bb_buf);
+    while (len) {
+        ssize_t n = write(fd, buf, len);
+        if (n <= 0) { if (errno == EINTR) continue; return; }
+        buf += n; len -= (size_t) n;
+    }
+    unsigned char d = (unsigned char) direction;
+    while (write(fd, &d, 1) < 0 && errno == EINTR) {}
 }
 
 /* ------------------------------------------------ recording-replay export */
