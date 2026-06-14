@@ -84,6 +84,11 @@ def main():
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
                     "tile-by-tile navigation. Recorded in the checkpoint.")
+    ap.add_argument("--max-steps", type=int, default=20000,
+                    help="per-episode step cap. Lower (~2500) for macro-free "
+                    "manual play: long wandering episodes give huge-variance "
+                    "returns that destabilize PPO; capping forces efficient "
+                    "descent and steadies training.")
     args = ap.parse_args()
     dev = args.device
 
@@ -106,7 +111,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     wipe_gamedata(args.gamedata)
-    vec = VectorEnv(args.envs, args.gamedata, reward_fn=REWARDS[args.reward])
+    vec = VectorEnv(args.envs, args.gamedata, reward_fn=REWARDS[args.reward],
+                    max_steps=args.max_steps)
     frames = vec.reset()
     hidden = model.initial_state(args.envs, dev)
     ep_returns, ep_depths = [], []
