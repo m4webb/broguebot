@@ -79,6 +79,31 @@ def hp_reward(prev, cur, info, w_dmg: float = 0.005,
     return r
 
 
+def frontier_reward(prev, cur, info, w: float = 0.0002) -> float:
+    """Default reward + a BOUNDED, non-farmable exploration nudge: pay only when
+    the level's explored-cell count reaches a NEW maximum (frontier pushed). The
+    per-step cell-reveal bonus (explore_reward) is farmable in macro-free play —
+    the agent wanders/re-reveals to milk it and never descends (observed: explore
+    return ballooned 3.5->12 while depth stalled at ~1.4). Rewarding only new
+    maxima caps the total per level at ~(cells * w) and gives ZERO for
+    re-treading, so the only way to keep earning is to push into unseen ground →
+    find the stairs → descend (depth pays 1.0 >> a level's ~0.4 frontier). The
+    per-level max is tracked in info['rstate'] (persisted across the episode by
+    the env) and reset on each depth change."""
+    r = default_reward(prev, cur, info)
+    st = info.get("rstate")
+    if st is None or prev is None or cur is None or cur.done \
+            or cur.stats.game_has_ended:
+        return r
+    if prev.stats.depth != cur.stats.depth:
+        st["maxexp"] = 0          # fresh level — reset the frontier
+    cnt = explored_count(cur)
+    if cnt > st.get("maxexp", 0):
+        r += w * (cnt - st.get("maxexp", 0))
+        st["maxexp"] = cnt
+    return r
+
+
 def eel_reward(prev, cur, info, w_eel: float = 0.01, flat: float = 0.15) -> float:
     """Default reward MINUS a penalty for taking EEL damage — the #1 depth-2
     killer (day3 death analysis: eels kill 18-26 games at depth 2, more than any
@@ -133,4 +158,5 @@ REWARDS = {
     "hp": hp_reward,
     "deep": deep_reward,
     "eel": eel_reward,
+    "frontier": frontier_reward,
 }

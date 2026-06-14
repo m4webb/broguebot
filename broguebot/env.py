@@ -87,6 +87,10 @@ class BrogueEnv:
         self.episode_return = 0.0
         self._last_was_macro = False
         self._rng = random.SystemRandom()
+        # scratch dict persisted across an episode's steps, handed to reward_fn
+        # via info["rstate"] so stateful rewards (e.g. per-level exploration
+        # frontier) can remember; cleared on reset().
+        self.reward_state: dict = {}
 
     # ------------------------------------------------------------ lifecycle
 
@@ -101,6 +105,7 @@ class BrogueEnv:
             raise RuntimeError("brogue exited before first frame")
         self.steps = 0
         self.episode_return = 0.0
+        self.reward_state.clear()
         return self.frame
 
     def close(self):
@@ -118,7 +123,8 @@ class BrogueEnv:
         frame = self.game.step(key)
         self.steps += 1
 
-        info = {"action": name, "seed": self.seed, "steps": self.steps}
+        info = {"action": name, "seed": self.seed, "steps": self.steps,
+                "rstate": self.reward_state}
         done = False
         if frame is None or frame.done or frame.stats.game_has_ended:
             done = True
