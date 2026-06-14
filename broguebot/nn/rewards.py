@@ -104,6 +104,63 @@ def frontier_reward(prev, cur, info, w: float = 0.0002) -> float:
     return r
 
 
+_G_DOWN_STAIRS, _G_PLAYER = 151, 152
+
+
+def _scan_map(frame):
+    """One pass over the dungeon-map window: returns (explored_cell_count,
+    player_screen_xy or None, downstairs_screen_xy or None). Reads glyphs off
+    the raw frame. Glyph 32=unknown; 151=down-stairs; 152=player."""
+    raw = frame.raw
+    n = 0
+    player = stairs = None
+    for x in range(_MX, _MX + _MW):
+        base = MAP_OFF + x * ROWS * 8
+        for y in range(_MY, _MY + _MH):
+            g = raw[base + y * 8] | (raw[base + y * 8 + 1] << 8)
+            if g != 32:
+                n += 1
+                if g == _G_PLAYER:
+                    player = (x, y)
+                elif g == _G_DOWN_STAIRS:
+                    stairs = (x, y)
+    return n, player, stairs
+
+
+def stairs_reward(prev, cur, info, w_front: float = 0.0002,
+                  w_near: float = 0.01) -> float:
+    """The bootstrap for macro-free play: explore to FIND the down-stairs, then
+    move TOWARD them, then descend. Three non-farmable, fairness-safe terms over
+    the depth spine:
+      - frontier: pay for pushing the level's explored-cell count to a new max
+        (find the stairs);
+      - attraction: once the down-stairs glyph is visible, pay for getting
+        CLOSER to it than ever before this level (min-distance, so oscillating
+        can't farm);
+      - depth (default_reward): +1.0 for descending (stepping onto the stairs).
+    Diagnosed need: the manual-BC policy explores but never descends (descent
+    prob ~0 -> no PPO signal); this gives a continuous gradient all the way onto
+    the staircase. All state in info['rstate'], reset per level."""
+    r = default_reward(prev, cur, info)
+    st = info.get("rstate")
+    if st is None or prev is None or cur is None or cur.done \
+            or cur.stats.game_has_ended:
+        return r
+    if prev.stats.depth != cur.stats.depth:
+        st["maxexp"] = 0
+        st["smin"] = 999            # fresh level: reset frontier + stair distance
+    n, player, stairs = _scan_map(cur)
+    if n > st.get("maxexp", 0):
+        r += w_front * (n - st.get("maxexp", 0))
+        st["maxexp"] = n
+    if stairs is not None and player is not None:
+        d = abs(player[0] - stairs[0]) + abs(player[1] - stairs[1])
+        if d < st.get("smin", 999):
+            r += w_near * (st.get("smin", 999) - d)
+            st["smin"] = d
+    return r
+
+
 def eel_reward(prev, cur, info, w_eel: float = 0.01, flat: float = 0.15) -> float:
     """Default reward MINUS a penalty for taking EEL damage — the #1 depth-2
     killer (day3 death analysis: eels kill 18-26 games at depth 2, more than any
@@ -159,4 +216,5 @@ REWARDS = {
     "deep": deep_reward,
     "eel": eel_reward,
     "frontier": frontier_reward,
+    "stairs": stairs_reward,
 }
