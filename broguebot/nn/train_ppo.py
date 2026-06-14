@@ -62,6 +62,10 @@ def main():
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--entropy", type=float, default=0.01)
+    ap.add_argument("--entropy-final", type=float, default=None,
+                    help="if set, entropy coef anneals linearly --entropy -> this "
+                    "over the run (a constant bonus over-explores late; anneal to "
+                    "e.g. 0.001 lets the policy sharpen as it converges)")
     ap.add_argument("--gamedata", default="gamedata/ppo")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
@@ -100,8 +104,14 @@ def main():
     best_depth = 0.0   # best smoothed eval depth -> ppo_best.pt (the trace
                        # oscillates, so the last %50 checkpoint is often a trough)
     N, T = args.envs, args.segment
+    # entropy coefficient anneals linearly --entropy -> --entropy-final over the
+    # run. A constant bonus over-explores late (day3: best plateaued while entropy
+    # drifted up); annealing lets the policy sharpen as it converges.
+    ent_final = args.entropy if args.entropy_final is None else args.entropy_final
 
     for update in range(1, args.updates + 1):
+        frac = (update - 1) / max(1, args.updates - 1)
+        ent_coef = args.entropy + frac * (ent_final - args.entropy)
         t0 = time.time()
         buf_obs, buf_act, buf_logp, buf_val, buf_rew, buf_done = \
             [], [], [], [], [], []
@@ -175,7 +185,7 @@ def main():
                 ratio.clamp(1 - args.clip, 1 + args.clip) * adv).mean()
             v_loss = F.mse_loss(values, ret)
             ent = dist.entropy().mean()
-            loss = pg + 0.5 * v_loss - args.entropy * ent
+            loss = pg + 0.5 * v_loss - ent_coef * ent
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
@@ -185,6 +195,7 @@ def main():
             sps = N * T / (time.time() - t0)
             rs, ds = ep_returns[-50:] or [0], ep_depths[-50:] or [1]
             print(f"upd {update}: loss {loss.item():.3f} ent {ent.item():.2f} "
+                  f"entc {ent_coef:.4f} "
                   f"ret {sum(rs)/len(rs):.2f} depth {sum(ds)/len(ds):.2f} "
                   f"eps {len(ep_returns)} ({sps:.0f} sps)", flush=True)
         if update % 50 == 0:
