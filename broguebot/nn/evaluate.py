@@ -28,6 +28,11 @@ def main():
     ckpt = torch.load(args.ckpt, map_location=args.device)
     model = BroguePolicy(getattr(Config, ckpt["config"])()).to(args.device)
     model.load_state_dict(ckpt["model"])
+    # re-apply the manual-play action mask the checkpoint was trained with
+    # (non-persistent buffer, so it isn't in state_dict)
+    if ckpt.get("disabled"):
+        model.set_disabled_actions(ckpt["disabled"])
+        print(f"disabled actions: {ckpt['disabled']}")
     model.eval()
 
     wipe_gamedata("gamedata/eval")

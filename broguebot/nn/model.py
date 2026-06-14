@@ -86,6 +86,14 @@ class BroguePolicy(nn.Module):
         nn.init.trunc_normal_(self.slot_emb, std=0.02)
         nn.init.trunc_normal_(self.cls, std=0.02)
 
+        # Action mask: additive bias on policy logits (0 = allowed, -inf =
+        # disabled). Non-persistent so it never breaks loading older
+        # checkpoints; set per-run via set_disabled_actions(). Used to forbid
+        # the game's macro commands (autoexplore `x`, travel `>`/`<`) so the
+        # policy must navigate tile-by-tile like a human player.
+        self.register_buffer("action_mask", torch.zeros(NUM_ACTIONS),
+                             persistent=False)
+
         # Training-time memory controls (no effect on single-step inference).
         # encode_chunk caps how many flattened (B*T) frames go through the
         # encoder at once; grad_checkpoint recomputes encoder activations in
@@ -96,6 +104,15 @@ class BroguePolicy(nn.Module):
 
     def initial_state(self, batch: int, device=None) -> torch.Tensor:
         return torch.zeros(batch, self.cfg.gru_dim, device=device)
+
+    def set_disabled_actions(self, names) -> None:
+        """Forbid the given action names (env.ACTIONS keys) by masking their
+        policy logits to -inf. Call after .to(device)."""
+        from ..env import ACTION_INDEX
+        m = torch.zeros(NUM_ACTIONS, device=self.action_mask.device)
+        for n in names:
+            m[ACTION_INDEX[n]] = float("-inf")
+        self.action_mask = m
 
     def encode_frame(self, obs: dict) -> torch.Tensor:
         """obs: featurize.batch() arrays as tensors. Returns (B, d)."""
@@ -159,7 +176,8 @@ class BroguePolicy(nn.Module):
         z = self.encode_frame(obs)
         hidden = self.memory(z, hidden)
         h = self.post(torch.cat([hidden, z], dim=-1))
-        return (self.policy_head(h), self.value_head(h).squeeze(-1),
+        return (self.policy_head(h) + self.action_mask,
+                self.value_head(h).squeeze(-1),
                 self.aux_head(h), hidden)
 
     def unroll(self, obs_seq: dict, hidden: torch.Tensor):
@@ -175,7 +193,7 @@ class BroguePolicy(nn.Module):
         for t in range(T):
             hidden = self.memory(z[:, t], hidden)
             h = self.post(torch.cat([hidden, z[:, t]], dim=-1))
-            logits.append(self.policy_head(h))
+            logits.append(self.policy_head(h) + self.action_mask)
             values.append(self.value_head(h).squeeze(-1))
         return torch.stack(logits, 1), torch.stack(values, 1), hidden
 

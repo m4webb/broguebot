@@ -171,6 +171,10 @@ def main():
     ap.add_argument("--val-frac", type=float, default=0.1,
                     help="fraction of episodes held out to measure the "
                     "train/val accuracy gap (overfitting); 0 disables")
+    ap.add_argument("--disable-actions", default="",
+                    help="comma-separated action names to forbid (mask logits "
+                    "to -inf; their targets are ignored in the CE loss), e.g. "
+                    "'explore,descend,ascend' for manual tile-by-tile play")
     args = ap.parse_args()
     dev = args.device
 
@@ -228,6 +232,16 @@ def main():
     model.encode_chunk = args.chunk
     if args.compile:
         model.encoder = torch.compile(model.encoder)
+    disabled = [s for s in args.disable_actions.split(",") if s] \
+        if args.disable_actions else []
+    disabled_idx = None
+    if disabled:
+        from ..env import ACTION_INDEX
+        model.set_disabled_actions(disabled)
+        disabled_idx = torch.tensor([ACTION_INDEX[n] for n in disabled],
+                                    device=dev)
+        print(f"manual play: disabled actions {disabled} "
+              "(masked logits + ignored in CE)")
     print(f"params: {count_params(model)/1e6:.2f}M")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
                             weight_decay=0.01)
@@ -260,8 +274,14 @@ def main():
         if args.stateful:
             carry = new_hidden
         logits, values = logits.float(), values.float()
+        flat_acts = acts.reshape(-1)
+        if disabled_idx is not None:
+            # a disabled action as the target would give CE on a -inf logit
+            # (= inf loss); ignore those steps (rare in human manual play)
+            flat_acts = flat_acts.clone()
+            flat_acts[torch.isin(flat_acts, disabled_idx)] = -100
         ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
-                             acts.reshape(-1))
+                             flat_acts, ignore_index=-100)
         v_loss = F.mse_loss(values, rets) if args.value_coef > 0 \
             else torch.zeros((), device=dev)
         loss = ce + args.value_coef * v_loss
@@ -282,11 +302,12 @@ def main():
             if va is not None and va > best_val:
                 best_val = va
                 torch.save({"model": model.state_dict(),
-                            "config": args.config, "val_acc": va, "step": step},
+                            "config": args.config, "val_acc": va, "step": step,
+                            "disabled": disabled},
                            os.path.join(args.out, "bc_best.pt"))
         if step % 500 == 0 or step == args.steps:
             torch.save({"model": model.state_dict(),
-                        "config": args.config},
+                        "config": args.config, "disabled": disabled},
                        os.path.join(args.out, "bc.pt"))
     print(f"saved {os.path.join(args.out, 'bc.pt')}; best val_acc {best_val:.3f} "
           f"-> {os.path.join(args.out, 'bc_best.pt')}")

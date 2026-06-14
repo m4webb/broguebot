@@ -43,7 +43,7 @@ def masked_unroll(model, obs_seq, hidden, dones):
             hidden = hidden * keep
         hidden = model.memory(z[:, t], hidden)
         h = model.post(torch.cat([hidden, z[:, t]], dim=-1))
-        logits.append(model.policy_head(h))
+        logits.append(model.policy_head(h) + model.action_mask)
         values.append(model.value_head(h).squeeze(-1))
     return torch.stack(logits, 1), torch.stack(values, 1)
 
@@ -80,6 +80,10 @@ def main():
                     help="torch.compile the encoder (~1.2x; adds startup cost)")
     ap.add_argument("--reward", default="default", choices=list(REWARDS),
                     help="reward shaping: default|explore|survival|dense")
+    ap.add_argument("--disable-actions", default="",
+                    help="comma-separated action names to forbid (mask logits "
+                    "to -inf), e.g. 'explore,descend,ascend' to force manual "
+                    "tile-by-tile navigation. Recorded in the checkpoint.")
     args = ap.parse_args()
     dev = args.device
 
@@ -92,6 +96,11 @@ def main():
         ckpt = torch.load(args.init, map_location=dev)
         model.load_state_dict(ckpt["model"])
         print("initialized from", args.init)
+    disabled = [s for s in args.disable_actions.split(",") if s] \
+        if args.disable_actions else []
+    if disabled:
+        model.set_disabled_actions(disabled)
+        print(f"manual play: disabled actions {disabled}")
     print(f"params: {count_params(model)/1e6:.2f}M device={dev}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
     os.makedirs(args.out, exist_ok=True)
@@ -200,7 +209,7 @@ def main():
                   f"eps {len(ep_returns)} ({sps:.0f} sps)", flush=True)
         if update % 50 == 0:
             torch.save({"model": model.state_dict(),
-                        "config": args.config},
+                        "config": args.config, "disabled": disabled},
                        os.path.join(args.out, "ppo.pt"))
             # also keep the highest smoothed-depth checkpoint (>=100 eps so the
             # average is meaningful), since ppo.pt may land on an oscillation trough
@@ -209,7 +218,8 @@ def main():
             if len(ep_depths) >= 100 and smooth > best_depth:
                 best_depth = smooth
                 torch.save({"model": model.state_dict(), "config": args.config,
-                            "smooth_depth": smooth, "update": update},
+                            "smooth_depth": smooth, "update": update,
+                            "disabled": disabled},
                            os.path.join(args.out, "ppo_best.pt"))
                 print(f"  [best] depth {smooth:.2f} @ upd {update} -> ppo_best.pt",
                       flush=True)
