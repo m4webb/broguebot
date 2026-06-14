@@ -79,6 +79,27 @@ def hp_reward(prev, cur, info, w_dmg: float = 0.005,
     return r
 
 
+def eel_reward(prev, cur, info, w_eel: float = 0.01, flat: float = 0.15) -> float:
+    """Default reward MINUS a penalty for taking EEL damage — the #1 depth-2
+    killer (day3 death analysis: eels kill 18-26 games at depth 2, more than any
+    other cause). Eels ambush from deep water and are submerged/invisible until
+    they strike, so the reliable signal is the attack MESSAGE, not a visible
+    monster: we fire only on a freshly-appeared message mentioning "eel" (the
+    hit event), and scale by HP lost (flat fallback when the 20-cell HP bar
+    doesn't register the small drop). Event-based (one hit = one penalty) and
+    non-farmable (best case = take no eel damage = 0 penalty), so it teaches
+    water-edge avoidance without the over-caution of a blanket HP penalty.
+    Fairness-safe: messages are exactly what the player reads on screen."""
+    r = default_reward(prev, cur, info)
+    if prev is not None and not (cur is None or cur.done
+                                 or cur.stats.game_has_ended):
+        new_msgs = [m for m in cur.messages if m not in prev.messages]
+        if any("eel" in m.lower() for m in new_msgs):
+            dhp = cur.stats.hp_pct - prev.stats.hp_pct
+            r -= w_eel * (-dhp if dhp < 0 else flat)
+    return r
+
+
 def dense_reward(prev, cur, info) -> float:
     """Exploration + survival shaping together over the depth-progress spine."""
     r = explore_reward(prev, cur, info)
@@ -111,4 +132,5 @@ REWARDS = {
     "dense": dense_reward,
     "hp": hp_reward,
     "deep": deep_reward,
+    "eel": eel_reward,
 }
