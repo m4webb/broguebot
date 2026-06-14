@@ -209,10 +209,33 @@ then gas).** Two more directions tried overnight (day3 night), BOTH NEGATIVE:
   one-shot) damage, so no learnable avoid-action from the frame at decision time;
   avoiding all water costs depth.
 
+**★ MACRO-FREE MANUAL PLAY (day3+, user-directed): WORKS but caps ~1.5.** Pivot:
+stop using the game's macro commands (autoexplore `x`, travel `>`; you descend by
+STEPPING onto the down-stairs — verified Movement.c, no key needed) and learn
+tile-by-tile hjkl/yubn navigation, unlocking the 569k human winning pairs as a
+now-action-matched teacher. Built (committed): action masking (`--disable-actions`
+explore,descend,ascend; non-persistent buffer, recorded in ckpt, eval auto-applies),
+bounded non-farmable `frontier` reward + `stairs`-attraction reward (find→approach→
+descend, via env `reward_state`/info['rstate']), `--max-steps` cap. Manual-BC on
+human_chunks → val ~0.30 (navigation is multimodal), depth 1 (wanders, descent
+prob ~0). PPO bootstraps descent: plain `explore` reward FARMS the cell proxy
+(return 3.5→12, depth stalls); the non-farmable `stairs` reward genuinely learns
+macro-free descent (depth 1.0→1.6, positive return) — **concept proven**. But it
+plateaus ~1.4–1.6 across every setting (entropy 0.004/0.008/0.01, capped/uncapped
+episodes; entropy drifts to runaway). Best run manual_ppo5 eval = **1.56** (50
+games, max 3) vs macro 3.71. Root cause: navigation EFFICIENCY — the weak clone
+wanders instead of pathing to stairs, and the cost compounds per level; the macros
+were doing heavy lifting (efficient explore + pathfind) that's hard to learn from
+scratch with this model/data. Eel-death hypothesis untested (never reaches the
+depth to compare). To make manual play competitive needs real new capability
+(stronger nav imitation / spatial-memory arch / curriculum) — multi-day. A HYBRID
+(macros for nav, manual control only near water to dodge eels) is the cheaper idea.
+
 **EXHAUSTED (all < or ≈ 3.71, none beat it):** reward shaping (explore/hp/deep/
 survival/dense/eel), human-keystroke imitation, memory (stateful BC + value-head),
-entropy annealing, deeper/longer training. The 3.71 ceiling is very well
-characterized. **Genuinely untried** (need real new capability, not tuning):
+entropy annealing, deeper/longer training, macro-free manual play (caps ~1.5).
+The 3.71 ceiling is very well characterized. **Genuinely untried** (real new
+capability, not tuning):
 1. **Better/deeper BC teacher** — scripted bot caps at depth 3–6; the BC base may
    cap PPO. A stronger teacher or self-play curriculum could lift the floor.
 2. **Transformer-XL** memory (vs GRU) — though memory helped the ceiling not the
