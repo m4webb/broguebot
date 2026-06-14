@@ -194,18 +194,30 @@ memory hypothesis to the end and it does NOT pay off on mean depth:
   the ceiling, not the mean. **So "96% reactive" was a real property but NOT the
   lever.** Memory closed as negative — like reward-shaping & human-imitation.
 
-**The REAL ceiling = the depth-2 death tail (eels/water ambush, combat
-consistency)** — the original killer, which memory was supposed to fix but
-doesn't. Next ideas (all UNTRIED on this bottleneck, ATTENDED):
-1. **Attack early-game consistency directly** — the 22.5% depth-2 deaths are the
-   biggest single loss. Diagnose what kills them (eel ambush? gas? combat?) and
-   shape/train against THAT specific failure, not a generic proxy.
-2. **Better/deeper BC teacher** — scripted bot reaches depth 3–6; the BC base may
-   cap PPO. A stronger teacher (or self-play curriculum) could lift the floor.
-3. **Entropy annealing** in PPO — day3 found the constant 0.01 bonus over-explores
-   late in long runs (best plateaued, entropy drifted 1.7→2.4). A schedule may let
-   the proven scripted-PPO recipe squeeze past 3.71.
-Reward shaping, human-keystroke imitation, AND the memory direction are exhausted.
+**The REAL ceiling = the depth-2 death tail (death analysis: eels #1 at 18/200,
+then gas).** Two more directions tried overnight (day3 night), BOTH NEGATIVE:
+- **Entropy annealing** (`--entropy-final`, anneal 0.01→0.001) — day3 found the
+  constant bonus over-explores late. Annealing DID raise training depth to a new
+  high (smoothed 3.86, momentary 4.06) but eval was 3.57/3.52 < 3.71. Confirms a
+  persistent **train≠eval gap**: higher training depth (random seeds) doesn't
+  transfer to the fixed-seed eval. Annealing is a real training improvement, not
+  an eval lever. (Feature kept — good default for future long runs.)
+- **Eel event-reward** (`--reward eel`, penalize eel-attack damage) — targeted the
+  #1 killer. Fully-trained eval 3.65 with depth-2 eel deaths 17 vs scripted's 18 =
+  **UNCHANGED**. Did NOT teach eel-avoidance, just preserved the base. Eels are
+  likely IRREDUCIBLE here: submerged/invisible until they strike + burst (near
+  one-shot) damage, so no learnable avoid-action from the frame at decision time;
+  avoiding all water costs depth.
+
+**EXHAUSTED (all < or ≈ 3.71, none beat it):** reward shaping (explore/hp/deep/
+survival/dense/eel), human-keystroke imitation, memory (stateful BC + value-head),
+entropy annealing, deeper/longer training. The 3.71 ceiling is very well
+characterized. **Genuinely untried** (need real new capability, not tuning):
+1. **Better/deeper BC teacher** — scripted bot caps at depth 3–6; the BC base may
+   cap PPO. A stronger teacher or self-play curriculum could lift the floor.
+2. **Transformer-XL** memory (vs GRU) — though memory helped the ceiling not the
+   mean, so low priority.
+3. Accept 3.71 as the result and consolidate.
 BEST policy remains **scripted-PPO 3.71** (`runs/ppo_warm/ppo.pt`).
 
 **⚠️ Host RAM is only 16GB (WSL2 gets ~15GB cap, but Windows needs ~11GB → WSL
