@@ -225,10 +225,21 @@ depth **2.67**) + `gen_dagger.py` (298k policy-state→oracle-move pairs). Round
 aggregate+retrain HURT (rollout 1.0): the oracle's moves encode GLOBAL pathfinding
 (nearest-unexplored direction) that's hard to imitate from one frame, esp. on the
 weak policy's lost states, and swamped the good data. NEXT (machinery ready):
-refined DAgger (disagreement-only states, original data dominant — overnight run
-`runs/manual_bc_daggermix` testing a 6:1 mix), oracle-driven CLEAN teacher data,
-finer spatial encoder (stride-4 conv blurs the map). Best macro-free navigator =
-`runs/manual_bc2/bc_best.pt` (~1.35). All hooks/scripts committed + reusable.
+refined DAgger (disagreement-only states, original data dominant — `daggermix` 6:1
+gave rollout 1.05, still worse), oracle-driven CLEAN teacher data, finer spatial
+encoder. Best macro-free navigator = `runs/manual_bc2/bc_best.pt` (~1.35).
+
+**FINE ENCODER (day4, `Config.fine` /2 stem, 850 map tokens): NEGATIVE.** Fits the
+teacher BETTER (val 0.846 > coarse 0.805) but rollout WORSE (1.20 sampled / 1.00
+greedy < coarse 1.35) — more imitation accuracy = more brittle to drift; greedy
+loops. So the bottleneck is NOT resolution/accuracy but BC COMPOUNDING ERRORS +
+can't-plan-paths. **Full macro-free lever sweep, all ≤1.35:** coarse-BC 1.35,
+fine-BC 1.2, PPO 1.0–1.6, DAgger 1.0–1.05, greedy 1.0. Macro-free neural nav is a
+hard open problem (a reactive net can't replace the game's Dijkstra from the obs;
+lit: NetHack symbolic≫neural). **PRAGMATIC path to actually beat 3.71 = HYBRID:**
+keep the game's pathfinding for navigation, let the neural policy make TACTICAL
+calls (descend-vs-explore-vs-fight-vs-flee, eel/water avoidance) — targets the
+depth-2 eel deaths without solving open neural-nav. All hooks/scripts committed.
 
 **★ (earlier macro-free attempt, day3+) WORKS but caps ~1.5.** Pivot:
 stop using the game's macro commands (autoexplore `x`, travel `>`; you descend by
