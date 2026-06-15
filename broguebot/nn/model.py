@@ -23,13 +23,16 @@ from .featurize import (GLYPH_VOCAB, ITEM_FEATS, MON_FEATS, MSG_BUCKETS,
 
 class Config:
     def __init__(self, d_model=128, n_layers=4, n_heads=4, glyph_dim=32,
-                 gru_dim=256, dropout=0.0):
+                 gru_dim=256, dropout=0.0, downsample=4):
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.glyph_dim = glyph_dim
         self.gru_dim = gru_dim
         self.dropout = dropout
+        # conv-stem spatial downsample factor: 4 -> 9x25=225 map tokens (coarse);
+        # 2 -> 17x50=850 tokens (fine, for global tile-by-tile navigation).
+        self.downsample = downsample
 
     @classmethod
     def small(cls):       # laptop CPU: ~1.5M params
@@ -39,6 +42,11 @@ class Config:
     def base(cls):        # RTX 5070: ~15M params
         return cls(d_model=384, n_layers=8, n_heads=8, glyph_dim=48,
                    gru_dim=768)
+
+    @classmethod
+    def fine(cls):        # base but /2 stem -> 850 map tokens for manual nav
+        return cls(d_model=384, n_layers=8, n_heads=8, glyph_dim=48,
+                   gru_dim=768, downsample=2)
 
 
 class BroguePolicy(nn.Module):
@@ -51,12 +59,15 @@ class BroguePolicy(nn.Module):
 
         self.glyph_emb = nn.Embedding(GLYPH_VOCAB, cfg.glyph_dim)
         in_ch = cfg.glyph_dim + 6  # + fg/bg rgb
+        ds = getattr(cfg, "downsample", 4)
+        # second conv stride 2 (=> /4) or 1 (=> /2); first is always stride 2
         self.stem = nn.Sequential(
             nn.Conv2d(in_ch, d, 3, stride=2, padding=1), nn.GELU(),
-            nn.Conv2d(d, d, 3, stride=2, padding=1),
+            nn.Conv2d(d, d, 3, stride=(2 if ds == 4 else 1), padding=1),
         )
-        self.h_tokens = (self.ROWS + 3) // 4   # 9
-        self.w_tokens = (self.COLS + 3) // 4   # 25
+        div = ds
+        self.h_tokens = (self.ROWS + div - 1) // div   # 9 (ds4) / 17 (ds2)
+        self.w_tokens = (self.COLS + div - 1) // div   # 25 (ds4) / 50 (ds2)
         n_spatial = self.h_tokens * self.w_tokens
         self.pos_emb = nn.Parameter(torch.zeros(1, n_spatial, d))
 

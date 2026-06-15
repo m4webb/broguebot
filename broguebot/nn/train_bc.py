@@ -140,7 +140,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", default="runs/bc")
-    ap.add_argument("--config", default="small", choices=["small", "base"])
+    ap.add_argument("--config", default="small", choices=["small", "base", "fine"])
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--window", type=int, default=32)

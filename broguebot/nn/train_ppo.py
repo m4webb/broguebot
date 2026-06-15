@@ -51,7 +51,7 @@ def masked_unroll(model, obs_seq, hidden, dones):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="runs/ppo")
-    ap.add_argument("--config", default="small", choices=["small", "base"])
+    ap.add_argument("--config", default="small", choices=["small", "base", "fine"])
     ap.add_argument("--init", help="BC checkpoint to start from")
     ap.add_argument("--envs", type=int, default=8)
     ap.add_argument("--segment", type=int, default=128)
