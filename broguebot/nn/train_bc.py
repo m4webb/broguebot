@@ -164,6 +164,9 @@ def main():
                     "(MSE) — calibrates it so PPO --init doesn't start with a "
                     "random value fn (fixes PPO-from-confident-base collapse)")
     ap.add_argument("--gamma", type=float, default=0.999)
+    ap.add_argument("--cache", type=int, default=64,
+                    help="episodes held in the sampler RAM cache; lower (~24) "
+                    "for large episodes to stay under the RAM watchdog")
     ap.add_argument("--stateful", action="store_true",
                     help="streaming truncated-BPTT BC: carry GRU hidden across "
                     "consecutive windows of each episode (memory-use without "
@@ -199,8 +202,9 @@ def main():
 
     def make_sampler(fs):
         if args.stateful:
-            return StreamSampler(fs, args.window, args.batch, gamma=args.gamma)
-        return WindowSampler(fs, args.window, gamma=args.gamma)
+            return StreamSampler(fs, args.window, args.batch,
+                                 cache=args.cache, gamma=args.gamma)
+        return WindowSampler(fs, args.window, cache=args.cache, gamma=args.gamma)
 
     sampler = make_sampler(train_files)
     val_sampler = make_sampler(val_files) if val_files else None
