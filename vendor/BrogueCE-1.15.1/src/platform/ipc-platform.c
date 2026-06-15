@@ -334,6 +334,49 @@ void bbManualExport(short direction) {
     while (write(fd, &d, 1) < 0 && errno == EINTR) {}
 }
 
+/* DAgger oracle: the move Brogue's own autoexplore/travel would make from the
+ * CURRENT state — fight an adjacent enemy, else step along the explore distance
+ * map, else (level explored) head to the down-stairs. Pure computation, no game
+ * mutation. Returns 0-7 (Brogue direction enum) or NO_DIRECTION. */
+short bbOracleDir(void) {
+    enum directions dir = adjacentFightingDir();
+    if (dir != NO_DIRECTION) return dir;
+    short **m = allocGrid();
+    getExploreMap(m, false);
+    dir = nextStep(m, player.loc, NULL, false);
+    if (dir == NO_DIRECTION) {
+        getExploreMap(m, true);
+        dir = nextStep(m, player.loc, NULL, false);
+    }
+    freeGrid(m);
+    return dir;
+}
+
+/* When BB_ORACLE_EXPORT names a file, append (obs frame + oracle direction) for
+ * the current state — call it right where the policy is asked for input, so the
+ * frame matches what the policy sees. Running our BC policy with this on yields
+ * DAgger pairs: the expert's move at every state the LEARNER visits. */
+void bbOracleExport(void) {
+    static int fd = -2;
+    if (fd == -2) {
+        const char *p = getenv("BB_ORACLE_EXPORT");
+        fd = (p && *p) ? open(p, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
+    }
+    if (fd < 0) return;
+    short dir = bbOracleDir();
+    if (dir < 0 || dir >= 8) return;   /* no nav move (explored / at stairs) */
+    bb_fillFrame(BB_TYPE_OBS);
+    const unsigned char *buf = (const unsigned char *) &bb_buf;
+    size_t len = sizeof(bb_buf);
+    while (len) {
+        ssize_t n = write(fd, buf, len);
+        if (n <= 0) { if (errno == EINTR) continue; return; }
+        buf += n; len -= (size_t) n;
+    }
+    unsigned char d = (unsigned char) dir;
+    while (write(fd, &d, 1) < 0 && errno == EINTR) {}
+}
+
 /* ------------------------------------------------ recording-replay export */
 
 /* When replaying a .broguerec under the IPC console (BROGUE_REPLAY_EXPORT set),
@@ -397,6 +440,7 @@ static void ipc_nextKeyOrMouseEvent(rogueEvent *returnEvent, boolean textInput, 
     (void) textInput; (void) colorsDance;
     unsigned short key;
     bb_exitIfGameOver();
+    { extern void bbOracleExport(void); bbOracleExport(); }
     bb_emitFrame(BB_TYPE_OBS);
     bb_readKey(&key);
     returnEvent->eventType = KEYSTROKE;
