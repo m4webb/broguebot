@@ -209,7 +209,28 @@ then gas).** Two more directions tried overnight (day3 night), BOTH NEGATIVE:
   one-shot) damage, so no learnable avoid-action from the frame at decision time;
   avoiding all water costs depth.
 
-**★ MACRO-FREE MANUAL PLAY (day3+, user-directed): WORKS but caps ~1.5.** Pivot:
+**★ STRONG MANUAL TEACHER + ORACLE/DAgger (day3 night) — machinery built+validated,
+navigator caps ~1.35; PPO & DAgger-round-1 don't beat it yet.** Following the
+literature (NetHack is Hard to Hack: imitate a strong symbolic teacher, not flat
+human keystrokes; RL on roguelike descent is brutal): (a) `playerMoves` C hook
+(`BB_MANUAL_EXPORT`) + `gen_manual.py` capture the scripted bot's optimal
+autoexplore/travel/melee as per-turn (frame,move) pairs (95% validated) → 390-ep
+teacher (depth 3.09). Stateful BC → **val 0.805** (vs human clone 0.30 — lit
+confirmed) but rollout **1.35** (compounding errors). (b) PPO from it (v2–v5,
+value-warmup via `value_warmup.py`, fixed a real `stairs` reward bug, every entropy
++ capped episodes): all collapse/runaway, ~1.0–1.5 — RL doesn't improve it. (c)
+DAgger: built+validated an **oracle** = Brogue's own autoexplore exposed in C
+(`bbOracleDir`=getExploreMap+nextStep, `BB_ORACLE_EXPORT`; oracle-driven rollout
+depth **2.67**) + `gen_dagger.py` (298k policy-state→oracle-move pairs). Round-1
+aggregate+retrain HURT (rollout 1.0): the oracle's moves encode GLOBAL pathfinding
+(nearest-unexplored direction) that's hard to imitate from one frame, esp. on the
+weak policy's lost states, and swamped the good data. NEXT (machinery ready):
+refined DAgger (disagreement-only states, original data dominant — overnight run
+`runs/manual_bc_daggermix` testing a 6:1 mix), oracle-driven CLEAN teacher data,
+finer spatial encoder (stride-4 conv blurs the map). Best macro-free navigator =
+`runs/manual_bc2/bc_best.pt` (~1.35). All hooks/scripts committed + reusable.
+
+**★ (earlier macro-free attempt, day3+) WORKS but caps ~1.5.** Pivot:
 stop using the game's macro commands (autoexplore `x`, travel `>`; you descend by
 STEPPING onto the down-stairs — verified Movement.c, no key needed) and learn
 tile-by-tile hjkl/yubn navigation, unlocking the 569k human winning pairs as a
