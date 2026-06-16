@@ -10,6 +10,8 @@ Pick one with train_ppo's --reward flag (wired separately). REWARDS maps a
 name to a function. Keep the default available as a control.
 """
 
+import numpy as np
+
 from ..env import default_reward
 from ..ipc import COLS, ROWS, MAP_OFF
 
@@ -164,6 +166,55 @@ def stairs_reward(prev, cur, info, w_front: float = 0.0002,
     return r
 
 
+# exact displayGlyph enum values (Rogue.h) for on-floor items and stairs
+_ITEM_GLYPHS = np.array([130, 202, 229, 174, 203, 210, 228, 201, 204, 173, 148,
+                         135, 138], dtype=np.uint16)  # potion..gold..key
+_STAIRS_GLYPHS = np.array([149, 151], dtype=np.uint16)  # up / down stairs
+
+
+def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05,
+                    w_stairs: float = 0.03, w_pickup: float = 0.1,
+                    step_cost: float = 0.0005) -> float:
+    """Intrinsic discovery reward — NO depth/oracle/distance signal.
+
+    Reward each NEWLY-revealed map square (a cell that goes from unknown to known
+    this episode-on-this-level), with a bonus for revealing items and stairs, plus
+    a bonus for picking items up (inventory grows). A small per-step cost means a
+    fully-explored level yields nothing more, so the only way to keep earning is to
+    DESCEND — a fresh level is a whole new map of unrevealed squares. Descending
+    itself is never rewarded; depth emerges from the discovery drive. Count-based
+    (a per-level revealed-mask in info['rstate']) so re-treading earns zero — not
+    farmable. Fairness-safe: reads only the on-screen glyph grid + inventory."""
+    st = info.get("rstate")
+    if st is None or cur is None or cur.done or cur.stats.game_has_ended:
+        return 0.0
+    raw = cur.raw
+    a = np.frombuffer(raw, np.uint8, COLS * ROWS * 8, MAP_OFF).reshape(COLS, ROWS, 8)
+    g = (a[:, :, 0].astype(np.uint16) | (a[:, :, 1].astype(np.uint16) << 8))
+    win = g[_MX:_MX + _MW, _MY:_MY + _MH]          # dungeon-map window
+    known_now = win != 32
+    # (re)start the revealed-mask on the first step or on a depth change
+    if "mask" not in st or (prev is not None
+                            and prev.stats.depth != cur.stats.depth):
+        st["mask"] = known_now.copy()
+        return -step_cost
+    fresh = known_now & ~st["mask"]
+    r = -step_cost
+    n = int(fresh.sum())
+    if n:
+        fg = win[fresh]
+        n_item = int(np.isin(fg, _ITEM_GLYPHS).sum())
+        n_stair = int(np.isin(fg, _STAIRS_GLYPHS).sum())
+        r += (w_cell * (n - n_item - n_stair) + w_item * n_item
+              + w_stairs * n_stair)
+        st["mask"] = st["mask"] | fresh
+    if prev is not None:                            # picked an item up?
+        dpick = len(cur.items) - len(prev.items)
+        if dpick > 0:
+            r += w_pickup * dpick
+    return r
+
+
 def eel_reward(prev, cur, info, w_eel: float = 0.01, flat: float = 0.15) -> float:
     """Default reward MINUS a penalty for taking EEL damage — the #1 depth-2
     killer (day3 death analysis: eels kill 18-26 games at depth 2, more than any
@@ -220,4 +271,5 @@ REWARDS = {
     "eel": eel_reward,
     "frontier": frontier_reward,
     "stairs": stairs_reward,
+    "discover": discover_reward,
 }
