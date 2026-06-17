@@ -216,12 +216,20 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
     st["last_g"], st["last_turn"] = g, turn_now
     noop = (prev_g is not None and prev_turn == turn_now
             and np.array_equal(g, prev_g))
-    # (re)start the revealed-mask on the first step or on a depth change
-    if "mask" not in st or (prev is not None
-                            and prev.stats.depth != cur.stats.depth):
-        st["mask"] = known_now.copy()
+    # Per-DEPTH revealed-mask. Seed a fresh mask the first time we set foot on a
+    # level; on REVISITING a level reuse its existing mask so re-revealed tiles
+    # earn nothing. NOTE: you ascend by STEPPING onto up-stairs (the masked </>
+    # keys don't prevent it), so a single shared mask that reset on every depth
+    # change let the policy farm cell-reward by oscillating between two levels
+    # (observed: 11 depth-changes/episode, +5.4 re-reward). Per-depth masks kill
+    # it while still rewarding genuinely NEW levels reached by descending.
+    masks = st.setdefault("masks", {})
+    depth = cur.stats.depth
+    if depth not in masks:            # first arrival on this level
+        masks[depth] = known_now.copy()
         return -step_cost
-    fresh = known_now & ~st["mask"]
+    mask = masks[depth]
+    fresh = known_now & ~mask
     r = -step_cost
     if noop:                          # penalize wasted keys (menu-mashing &c.)
         r -= w_noop
@@ -232,7 +240,7 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
         n_stair = int(np.isin(fg, _STAIRS_GLYPHS).sum())
         r += (w_cell * (n - n_item - n_stair) + w_item * n_item
               + w_stairs * n_stair)
-        st["mask"] = st["mask"] | fresh
+        masks[depth] = mask | fresh
     seen = st["items_seen"]           # first-time pickup of each distinct item
     for it in cur.items:
         k = _item_id(it)
