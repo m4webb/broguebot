@@ -172,19 +172,19 @@ _ITEM_GLYPHS = np.array([130, 202, 229, 174, 203, 210, 228, 201, 204, 173, 148,
 _STAIRS_GLYPHS = np.array([149, 151], dtype=np.uint16)  # up / down stairs
 
 
-def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05,
-                    w_stairs: float = 0.03, w_pickup: float = 0.1,
-                    step_cost: float = 0.0005) -> float:
+def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.06,
+                    w_stairs: float = 0.03, step_cost: float = 0.0005) -> float:
     """Intrinsic discovery reward — NO depth/oracle/distance signal.
 
     Reward each NEWLY-revealed map square (a cell that goes from unknown to known
-    this episode-on-this-level), with a bonus for revealing items and stairs, plus
-    a bonus for picking items up (inventory grows). A small per-step cost means a
-    fully-explored level yields nothing more, so the only way to keep earning is to
-    DESCEND — a fresh level is a whole new map of unrevealed squares. Descending
-    itself is never rewarded; depth emerges from the discovery drive. Count-based
-    (a per-level revealed-mask in info['rstate']) so re-treading earns zero — not
-    farmable. Fairness-safe: reads only the on-screen glyph grid + inventory."""
+    this episode-on-this-level), with a bonus for FINDING an item or stairs the
+    first time (revealing its tile). A small per-step cost means a fully-explored
+    level yields nothing more, so the only way to keep earning is to DESCEND — a
+    fresh level is a whole new map of unrevealed squares. Descending itself is
+    never rewarded; depth emerges from the discovery drive. Count-based (a per-
+    level revealed-mask in info['rstate']) so re-treading / re-seeing earns zero —
+    not farmable, and tied to FINDING items (not holding them), so it never
+    discourages using items. Fairness-safe: reads only the on-screen glyph grid."""
     st = info.get("rstate")
     if st is None or cur is None or cur.done or cur.stats.game_has_ended:
         return 0.0
@@ -194,11 +194,9 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
     win = g[_MX:_MX + _MW, _MY:_MY + _MH]          # dungeon-map window
     known_now = win != 32
     # (re)start the revealed-mask on the first step or on a depth change
-    if "maxinv" not in st:
-        st["maxinv"] = len(cur.items)
     if "mask" not in st or (prev is not None
                             and prev.stats.depth != cur.stats.depth):
-        st["mask"] = known_now.copy()      # fresh level; inventory carries over
+        st["mask"] = known_now.copy()
         return -step_cost
     fresh = known_now & ~st["mask"]
     r = -step_cost
@@ -210,12 +208,6 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
         r += (w_cell * (n - n_item - n_stair) + w_item * n_item
               + w_stairs * n_stair)
         st["mask"] = st["mask"] | fresh
-    # pickup: reward only growing the inventory to a NEW per-episode high, so
-    # drop+repickup (the drop action isn't masked) can't farm the bonus.
-    ninv = len(cur.items)
-    if ninv > st["maxinv"]:
-        r += w_pickup * (ninv - st["maxinv"])
-        st["maxinv"] = ninv
     return r
 
 
