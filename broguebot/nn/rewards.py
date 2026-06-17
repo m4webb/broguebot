@@ -172,19 +172,27 @@ _ITEM_GLYPHS = np.array([130, 202, 229, 174, 203, 210, 228, 201, 204, 173, 148,
 _STAIRS_GLYPHS = np.array([149, 151], dtype=np.uint16)  # up / down stairs
 
 
-def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.06,
-                    w_stairs: float = 0.03, step_cost: float = 0.0005) -> float:
+def _item_id(it):
+    """Stable-ish item identity: survives drop+repickup and using a stack down
+    (quantity stripped from the name), so neither can re-earn the pickup bonus."""
+    return (it.category, it.kind, it.name.lstrip("0123456789 "))
+
+
+def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05,
+                    w_stairs: float = 0.03, w_pickup: float = 0.1,
+                    step_cost: float = 0.0005) -> float:
     """Intrinsic discovery reward — NO depth/oracle/distance signal.
 
-    Reward each NEWLY-revealed map square (a cell that goes from unknown to known
-    this episode-on-this-level), with a bonus for FINDING an item or stairs the
-    first time (revealing its tile). A small per-step cost means a fully-explored
-    level yields nothing more, so the only way to keep earning is to DESCEND — a
-    fresh level is a whole new map of unrevealed squares. Descending itself is
-    never rewarded; depth emerges from the discovery drive. Count-based (a per-
-    level revealed-mask in info['rstate']) so re-treading / re-seeing earns zero —
-    not farmable, and tied to FINDING items (not holding them), so it never
-    discourages using items. Fairness-safe: reads only the on-screen glyph grid."""
+    Reward each NEWLY-revealed map square (a cell that goes unknown->known this
+    episode-on-this-level), a bonus for revealing an item or stairs tile, and a
+    bonus for PICKING UP an item the first time. A small per-step cost means a
+    fully-explored level yields nothing more, so the only way to keep earning is to
+    DESCEND — a fresh level is a whole new map of unrevealed squares. Descending
+    itself is never rewarded; depth emerges from the discovery drive. Everything is
+    first-time-only (per-level tile mask; per-episode item-identity set) so
+    re-treading, re-seeing, and drop+repickup all earn zero — non-farmable. The
+    pickup bonus is tied to FINDING new items, not inventory size, so it never
+    discourages using items. Fairness-safe: on-screen glyphs + the inventory."""
     st = info.get("rstate")
     if st is None or cur is None or cur.done or cur.stats.game_has_ended:
         return 0.0
@@ -193,6 +201,8 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.06
     g = (a[:, :, 0].astype(np.uint16) | (a[:, :, 1].astype(np.uint16) << 8))
     win = g[_MX:_MX + _MW, _MY:_MY + _MH]          # dungeon-map window
     known_now = win != 32
+    if "items_seen" not in st:        # starting inventory isn't a "pickup"
+        st["items_seen"] = {_item_id(it) for it in cur.items}
     # (re)start the revealed-mask on the first step or on a depth change
     if "mask" not in st or (prev is not None
                             and prev.stats.depth != cur.stats.depth):
@@ -208,6 +218,12 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.06
         r += (w_cell * (n - n_item - n_stair) + w_item * n_item
               + w_stairs * n_stair)
         st["mask"] = st["mask"] | fresh
+    seen = st["items_seen"]           # first-time pickup of each distinct item
+    for it in cur.items:
+        k = _item_id(it)
+        if k not in seen:
+            seen.add(k)
+            r += w_pickup
     return r
 
 
