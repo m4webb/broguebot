@@ -194,9 +194,11 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
     win = g[_MX:_MX + _MW, _MY:_MY + _MH]          # dungeon-map window
     known_now = win != 32
     # (re)start the revealed-mask on the first step or on a depth change
+    if "maxinv" not in st:
+        st["maxinv"] = len(cur.items)
     if "mask" not in st or (prev is not None
                             and prev.stats.depth != cur.stats.depth):
-        st["mask"] = known_now.copy()
+        st["mask"] = known_now.copy()      # fresh level; inventory carries over
         return -step_cost
     fresh = known_now & ~st["mask"]
     r = -step_cost
@@ -208,10 +210,12 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
         r += (w_cell * (n - n_item - n_stair) + w_item * n_item
               + w_stairs * n_stair)
         st["mask"] = st["mask"] | fresh
-    if prev is not None:                            # picked an item up?
-        dpick = len(cur.items) - len(prev.items)
-        if dpick > 0:
-            r += w_pickup * dpick
+    # pickup: reward only growing the inventory to a NEW per-episode high, so
+    # drop+repickup (the drop action isn't masked) can't farm the bonus.
+    ninv = len(cur.items)
+    if ninv > st["maxinv"]:
+        r += w_pickup * (ninv - st["maxinv"])
+        st["maxinv"] = ninv
     return r
 
 
