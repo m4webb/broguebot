@@ -66,6 +66,13 @@ def main():
                     help="if set, entropy coef anneals linearly --entropy -> this "
                     "over the run (a constant bonus over-explores late; anneal to "
                     "e.g. 0.001 lets the policy sharpen as it converges)")
+    ap.add_argument("--entropy-anneal-updates", type=int, default=None,
+                    help="anneal --entropy -> --entropy-final over the FIRST this-many "
+                    "updates, then hold at the floor (default: over the whole run). "
+                    "A short horizon (e.g. 400) lets the policy commit early instead "
+                    "of churning at high entropy — day3 cold-start wasted ~600 updates "
+                    "on the plateau because the full-run anneal kept ent_coef ~0.0055 "
+                    "until upd ~700.")
     ap.add_argument("--gamedata", default="gamedata/ppo")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
@@ -123,9 +130,10 @@ def main():
     # run. A constant bonus over-explores late (day3: best plateaued while entropy
     # drifted up); annealing lets the policy sharpen as it converges.
     ent_final = args.entropy if args.entropy_final is None else args.entropy_final
+    anneal_n = args.entropy_anneal_updates or args.updates
 
     for update in range(1, args.updates + 1):
-        frac = (update - 1) / max(1, args.updates - 1)
+        frac = min(1.0, (update - 1) / max(1, anneal_n - 1))
         ent_coef = args.entropy + frac * (ent_final - args.entropy)
         t0 = time.time()
         buf_obs, buf_act, buf_logp, buf_val, buf_rew, buf_done = \
