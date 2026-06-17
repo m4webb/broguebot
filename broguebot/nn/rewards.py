@@ -182,7 +182,7 @@ def _item_id(it):
 
 def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05,
                     w_stairs: float = 0.03, w_pickup: float = 0.1,
-                    step_cost: float = 0.0005) -> float:
+                    step_cost: float = 0.0005, w_noop: float = 0.005) -> float:
     """Intrinsic discovery reward — NO depth/oracle/distance signal.
 
     Reward each NEWLY-revealed map square (a cell that goes unknown->known this
@@ -205,6 +205,17 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
     known_now = win != 32
     if "items_seen" not in st:        # starting inventory isn't a "pickup"
         st["items_seen"] = {_item_id(it) for it in cur.items}
+    # dead-keystroke detection: a key that neither advanced a game turn nor
+    # changed ANYTHING on screen wasted time (an idle menu key, a wall-bump, a
+    # wrong key at a prompt). Cache the full-screen glyph signature + turn each
+    # step (update before any early-return so the cache stays in sync). Compare
+    # GLYPHS ONLY — Brogue animates torch/water COLORS every frame, so a
+    # color-inclusive compare would never read as "unchanged".
+    turn_now = cur.stats.absolute_turns
+    prev_g, prev_turn = st.get("last_g"), st.get("last_turn")
+    st["last_g"], st["last_turn"] = g, turn_now
+    noop = (prev_g is not None and prev_turn == turn_now
+            and np.array_equal(g, prev_g))
     # (re)start the revealed-mask on the first step or on a depth change
     if "mask" not in st or (prev is not None
                             and prev.stats.depth != cur.stats.depth):
@@ -212,6 +223,8 @@ def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05
         return -step_cost
     fresh = known_now & ~st["mask"]
     r = -step_cost
+    if noop:                          # penalize wasted keys (menu-mashing &c.)
+        r -= w_noop
     n = int(fresh.sum())
     if n:
         fg = win[fresh]
