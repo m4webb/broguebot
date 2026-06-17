@@ -1,0 +1,8 @@
+# Brogue Bot — Python dependencies (Python 3.12+).
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# The only direct deps are torch + numpy; torch pulls in the rest.
+# torch 2.12 here is the CUDA build (cu130) used on the RTX 5070; on a
+# CPU-only box `pip install torch` grabs the CPU wheel, which is all the
+# watch/eval harness needs (run with --device cpu).
+torch==2.12.0
+numpy==2.4.6
