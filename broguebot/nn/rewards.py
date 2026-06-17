@@ -173,9 +173,11 @@ _STAIRS_GLYPHS = np.array([149, 151], dtype=np.uint16)  # up / down stairs
 
 
 def _item_id(it):
-    """Stable-ish item identity: survives drop+repickup and using a stack down
-    (quantity stripped from the name), so neither can re-earn the pickup bonus."""
-    return (it.category, it.kind, it.name.lstrip("0123456789 "))
+    """Stable item identity for the first-time-pickup bonus. Uses ONLY immutable
+    fields (category, kind) — NOT the name, which the policy can mutate via the
+    relabel/'call' action (it learned to rename items every step to re-trigger the
+    bonus). So drop+repickup, using a stack down, AND renaming all earn nothing."""
+    return (it.category, it.kind)
 
 
 def discover_reward(prev, cur, info, w_cell: float = 0.002, w_item: float = 0.05,
