@@ -296,8 +296,53 @@ def deep_reward(prev, cur, info, k: float = 1.0) -> float:
     return r
 
 
+def _is_player_kill(m: str) -> bool:
+    """True if a message is the PLAYER killing a monster. Brogue (Combat.c):
+    'You defeated the jackal.' / 'You dispatched the kobold.' (sneak/asleep) /
+    'You destroyed the ...' (inanimate) / 'you hear something die in combat'
+    (killed unseen). The 'you' prefix excludes monster-vs-monster ('The rat
+    defeated the ...'). Fair: it's literally the message the player reads."""
+    s = m.lower()
+    if s.startswith("you ") and ("defeated" in s or "dispatched" in s
+                                 or "destroyed" in s):
+        return True
+    return "you hear something die in combat" in s
+
+
+def combat_reward(prev, cur, info, w_dmg: float = 0.02, w_kill: float = 0.25,
+                  **kw) -> float:
+    """discover_reward + a 'bounty on monsters': penalize HP loss and reward
+    PLAYER kills. The eval death-analysis showed the macro-free ceiling (~1.5)
+    is a COMBAT-SURVIVAL failure — ~37/50 games die to weak monsters (jackal/
+    kobold/rat) on depths 1-2 — because the pure discovery reward gives ZERO
+    gradient for fighting or surviving. This adds it:
+      - damage penalty: -w_dmg per hp_q (0-20 sidebar bar) LOST since last step.
+        Drops only (regen isn't rewarded). Covers monster hits, gas, traps.
+      - kill bonus: +w_kill per NEW player-kill message (deduped vs last step so
+        a kill lingering in the 4-message window isn't re-counted).
+    Both EVENT-based and non-farmable: monsters don't respawn and killing needs
+    real (risky) combat; damage is a penalty. Tune w_dmg/w_kill to balance
+    aggression vs caution (hp-only shaping went over-cautious before)."""
+    r = discover_reward(prev, cur, info, **kw)
+    st = info.get("rstate")
+    if st is None or cur is None or cur.done or cur.stats.game_has_ended:
+        return r
+    hp = cur.stats.hp_q
+    last_hp = st.get("last_hp", hp)
+    if hp < last_hp:
+        r -= w_dmg * (last_hp - hp)
+    st["last_hp"] = hp
+    kills_now = {m for m in cur.messages if _is_player_kill(m)}
+    new_kills = kills_now - st.get("last_kills", set())
+    if new_kills:
+        r += w_kill * len(new_kills)
+    st["last_kills"] = kills_now
+    return r
+
+
 REWARDS = {
     "default": default_reward,
+    "combat": combat_reward,
     "explore": explore_reward,
     "survival": survival_reward,
     "dense": dense_reward,
