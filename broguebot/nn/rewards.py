@@ -340,7 +340,7 @@ def combat_reward(prev, cur, info, w_dmg: float = 0.02, w_kill: float = 0.25,
     return r
 
 
-def descend_reward(prev, cur, info, w_depth: float = 1.0, **kw) -> float:
+def descend_reward(prev, cur, info, w_depth: float = 2.0, **kw) -> float:
     """combat_reward (explore + survive + kill) PLUS a direct descent bonus:
     +w_depth for each NEW deepest level reached. Tests the incentive-vs-capability
     question the combat eval raised — 31/46 games survived to the step cap WITHOUT
@@ -356,8 +356,14 @@ def descend_reward(prev, cur, info, w_depth: float = 1.0, **kw) -> float:
     st = info.get("rstate")
     if st is None or cur is None or cur.done or cur.stats.game_has_ended:
         return r
+    # SCALED by depth (deeper pays more): reaching new deepest L pays w_depth*L.
+    # A flat +1/level (descend v1) was out-competed by shallow kill+tile farming
+    # (return ballooned to 6 while depth REGRESSED 1.74->1.32) — clearing depth 1-2
+    # paid more than descending. Scaling makes the rare deep descents dominate and
+    # creates increasing downward pull. Still monotonic on deepest => non-farmable.
     if prev is not None and cur.stats.deepest > prev.stats.deepest:
-        r += w_depth * (cur.stats.deepest - prev.stats.deepest)
+        for L in range(prev.stats.deepest + 1, cur.stats.deepest + 1):
+            r += w_depth * L
     return r
 
 
