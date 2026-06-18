@@ -340,9 +340,31 @@ def combat_reward(prev, cur, info, w_dmg: float = 0.02, w_kill: float = 0.25,
     return r
 
 
+def descend_reward(prev, cur, info, w_depth: float = 1.0, **kw) -> float:
+    """combat_reward (explore + survive + kill) PLUS a direct descent bonus:
+    +w_depth for each NEW deepest level reached. Tests the incentive-vs-capability
+    question the combat eval raised — 31/46 games survived to the step cap WITHOUT
+    descending. If the agent wasn't descending because the dense discovery reward
+    made safe local exploitation more attractive than the delayed/forfeiting payoff
+    of stairs (an INCENTIVE problem), a direct descent reward should lift depth. If
+    depth barely moves, the bottleneck is CAPABILITY (can't find/reach stairs ->
+    needs the hybrid pathfinder), not incentive. Event-based on cur.stats.deepest
+    (pays once per new level, monotonic) so it's non-farmable: you can't ride
+    stairs up-and-down to re-earn it, and reaching a new deepest requires surviving
+    the descent (rewards successful descent, not suicide)."""
+    r = combat_reward(prev, cur, info, **kw)
+    st = info.get("rstate")
+    if st is None or cur is None or cur.done or cur.stats.game_has_ended:
+        return r
+    if prev is not None and cur.stats.deepest > prev.stats.deepest:
+        r += w_depth * (cur.stats.deepest - prev.stats.deepest)
+    return r
+
+
 REWARDS = {
     "default": default_reward,
     "combat": combat_reward,
+    "descend": descend_reward,
     "explore": explore_reward,
     "survival": survival_reward,
     "dense": dense_reward,
