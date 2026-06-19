@@ -340,7 +340,7 @@ def combat_reward(prev, cur, info, w_dmg: float = 0.02, w_kill: float = 0.25,
     return r
 
 
-def descend_reward(prev, cur, info, w_depth: float = 2.0, **kw) -> float:
+def descend_reward(prev, cur, info, w_depth: float = 1.0, **kw) -> float:
     """combat_reward (explore + survive + kill) PLUS a direct descent bonus:
     +w_depth for each NEW deepest level reached. Tests the incentive-vs-capability
     question the combat eval raised — 31/46 games survived to the step cap WITHOUT
