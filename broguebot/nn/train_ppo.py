@@ -114,6 +114,11 @@ def main():
                     help="count mode: EPISODIC novelty (NGU-style) — reward states "
                     "new THIS LIFE, reset at death. Per-life saturation forces "
                     "progression (explore level -> descend), unlike lifetime counts.")
+    ap.add_argument("--rnd-bonus", type=float, default=0.0,
+                    help="if >0, KEEP the extrinsic --reward and ADD this*novelty as "
+                    "an exploration bonus (vs default: novelty REPLACES extrinsic). "
+                    "Pure novelty -> shallow; as a bonus on a task reward it may aid "
+                    "exploration without abandoning the depth drive.")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -218,8 +223,7 @@ def main():
 
         rnd_loss = 0.0
         if rnd is not None:
-            # intrinsic 'interestingness' = novelty of each observation; replaces
-            # the extrinsic reward entirely.
+            # intrinsic 'interestingness' = novelty of each observation.
             if args.rnd_episodic:
                 raw = rnd.reward_episodic(obs_seq, dones).float()
                 rnd_loss = sum(len(d) for d in rnd.ep_counts) / N  # avg per-life states
@@ -228,7 +232,10 @@ def main():
                         for k, v in obs_seq.items()}
                 raw = rnd.reward_raw(flat).reshape(N, T).float()
                 rnd_loss = rnd.distill(flat)   # predictor step (RND) / #buckets (count)
-            rews = rnd.normalize(raw, args.gamma)
+            nov = rnd.normalize(raw, args.gamma)
+            # --rnd-bonus W>0: keep the extrinsic task reward, ADD W*novelty as an
+            # exploration bonus. Else (=0): pure intrinsic, replace extrinsic.
+            rews = rews + args.rnd_bonus * nov if args.rnd_bonus > 0 else nov
 
         adv = torch.zeros_like(rews)
         last_gae = torch.zeros(N, device=dev)
