@@ -153,6 +153,11 @@ class CountNovelty:
         self.pow2 = (2 ** torch.arange(bits, device=device)).long()
         self.counts = {}
         self.ret_rms = _RunningMeanStd(device=device)
+        # the random conv embedding has near-zero per-dim variance (std ~0.003)
+        # -> SimHash collapses all states to a few buckets. Whiten per-dim with
+        # running stats so the hyperplanes split actual state variation (verified:
+        # 4 -> 138 distinct buckets / 600 frames).
+        self.emb_rms = _RunningMeanStd(shape=(k,), device=device)
 
     def _split(self, obs):
         return (obs["glyphs"].long(), obs["colors"].float(),
@@ -162,6 +167,8 @@ class CountNovelty:
     def reward_raw(self, obs):
         g, c, d = self._split(obs)
         e = self.embed(g, c, d)                         # (N,k) random projection
+        self.emb_rms.update(e)
+        e = (e - self.emb_rms.mean) / self.emb_rms.std  # whiten -> usable SimHash
         codes = (((e @ self.A.T) > 0).long() * self.pow2).sum(1)  # (N,) bucket id
         out = torch.empty(e.shape[0], device=self.device)
         for i, code in enumerate(codes.tolist()):       # lifetime count per bucket
