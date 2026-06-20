@@ -102,6 +102,10 @@ def main():
                     help="count mode: SimHash bits. Fewer = coarser = per-level "
                     "novelty saturates sooner (more descent pressure); too few "
                     "= states collide into noise.")
+    ap.add_argument("--rnd-depth-key", action="store_true",
+                    help="count mode: stratify novelty buckets by dungeon depth, "
+                    "so a new level is maximally novel. Diagnostic: does a "
+                    "depth-salient novelty metric induce descent?")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -131,7 +135,8 @@ def main():
     print(f"params: {count_params(model)/1e6:.2f}M device={dev}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
     nov_cls = {"rnd": RND, "count": CountNovelty}[args.rnd_mode]
-    rnd = nov_cls(dev, lr=args.rnd_lr, bits=args.rnd_bits) if args.rnd else None
+    rnd = nov_cls(dev, lr=args.rnd_lr, bits=args.rnd_bits,
+                  depth_key=args.rnd_depth_key) if args.rnd else None
     if rnd is not None:
         print(f"intrinsic novelty ON ({args.rnd_mode}) — extrinsic reward IGNORED")
     os.makedirs(args.out, exist_ok=True)

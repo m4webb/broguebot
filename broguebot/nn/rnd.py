@@ -144,8 +144,11 @@ class CountNovelty:
     pulling the agent toward genuinely new states. Same _RNDNet random embedding,
     then SimHash to `bits` bits. distill() is a no-op (nothing to train)."""
 
-    def __init__(self, device, k: int = 128, bits: int = 22, **_):
+    def __init__(self, device, k: int = 128, bits: int = 22,
+                 depth_key: bool = False, **_):
         self.device = device
+        self.depth_key = depth_key      # stratify buckets by dungeon depth
+        self.base = 1 << bits
         self.embed = _RNDNet(k=k).to(device).eval()
         for p in self.embed.parameters():
             p.requires_grad_(False)
@@ -170,6 +173,11 @@ class CountNovelty:
         self.emb_rms.update(e)
         e = (e - self.emb_rms.mean) / self.emb_rms.std  # whiten -> usable SimHash
         codes = (((e @ self.A.T) > 0).long() * self.pow2).sum(1)  # (N,) bucket id
+        if self.depth_key:
+            # each depth gets its own bucket-space: a NEW level = all count-1
+            # buckets = maximally novel (a fresh dungeon >> another room).
+            depth_int = (d.squeeze(-1) * 26).round().long()
+            codes = depth_int * self.base + codes
         out = torch.empty(e.shape[0], device=self.device)
         for i, code in enumerate(codes.tolist()):       # lifetime count per bucket
             n = self.counts.get(code, 0) + 1
