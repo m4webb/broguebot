@@ -20,6 +20,7 @@ import torch.nn.functional as F
 
 from ..env import VectorEnv, wipe_gamedata
 from .rewards import REWARDS
+from .rnd import RND
 from .featurize import batch as batch_feats, featurize
 from .model import BroguePolicy, Config, count_params
 
@@ -87,6 +88,13 @@ def main():
                     help="torch.compile the encoder (~1.2x; adds startup cost)")
     ap.add_argument("--reward", default="default", choices=list(REWARDS),
                     help="reward shaping: default|explore|survival|dense")
+    ap.add_argument("--rnd", action="store_true",
+                    help="IGNORE the extrinsic reward and train on pure RND "
+                    "intrinsic 'interestingness' (novelty of the on-screen "
+                    "glyph+RGB state). Single self-supervised signal; descent/"
+                    "exploration/combat emerge from novelty-seeking.")
+    ap.add_argument("--rnd-lr", type=float, default=1e-4,
+                    help="learning rate for the RND predictor network")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -115,6 +123,9 @@ def main():
         print(f"manual play: disabled actions {disabled}")
     print(f"params: {count_params(model)/1e6:.2f}M device={dev}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
+    rnd = RND(dev, lr=args.rnd_lr) if args.rnd else None
+    if rnd is not None:
+        print("RND intrinsic reward ON — extrinsic reward IGNORED")
     os.makedirs(args.out, exist_ok=True)
 
     wipe_gamedata(args.gamedata)
@@ -183,6 +194,15 @@ def main():
             np.stack([b[k] for b in buf_obs], axis=1), device=dev)
             for k in buf_obs[0]}
 
+        rnd_loss = 0.0
+        if rnd is not None:
+            # intrinsic 'interestingness' = novelty of each observation; replaces
+            # the extrinsic reward entirely. Train the predictor on the same obs.
+            flat = {k: v.reshape(N * T, *v.shape[2:]) for k, v in obs_seq.items()}
+            raw = rnd.reward_raw(flat).reshape(N, T).float()
+            rews = rnd.normalize(raw, args.gamma)
+            rnd_loss = rnd.distill(flat)
+
         adv = torch.zeros_like(rews)
         last_gae = torch.zeros(N, device=dev)
         next_val = last_value
@@ -217,9 +237,11 @@ def main():
         if update % 5 == 0 or update == 1:
             sps = N * T / (time.time() - t0)
             rs, ds = ep_returns[-50:] or [0], ep_depths[-50:] or [1]
+            ret_disp = (f"intr {rews.mean().item():.3f} rndL {rnd_loss:.3f}"
+                        if rnd is not None else f"ret {sum(rs)/len(rs):.2f}")
             print(f"upd {update}: loss {loss.item():.3f} ent {ent.item():.2f} "
                   f"entc {ent_coef:.4f} "
-                  f"ret {sum(rs)/len(rs):.2f} depth {sum(ds)/len(ds):.2f} "
+                  f"{ret_disp} depth {sum(ds)/len(ds):.2f} "
                   f"eps {len(ep_returns)} ({sps:.0f} sps)", flush=True)
         if update % 50 == 0:
             torch.save({"model": model.state_dict(),
