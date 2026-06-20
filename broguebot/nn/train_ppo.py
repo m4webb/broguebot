@@ -98,6 +98,10 @@ def main():
     ap.add_argument("--rnd-mode", default="rnd", choices=["rnd", "count"],
                     help="intrinsic novelty type: rnd (prediction-error; can "
                     "collapse) or count (SimHash pseudo-counts; collapse-proof)")
+    ap.add_argument("--rnd-bits", type=int, default=22,
+                    help="count mode: SimHash bits. Fewer = coarser = per-level "
+                    "novelty saturates sooner (more descent pressure); too few "
+                    "= states collide into noise.")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -127,7 +131,7 @@ def main():
     print(f"params: {count_params(model)/1e6:.2f}M device={dev}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
     nov_cls = {"rnd": RND, "count": CountNovelty}[args.rnd_mode]
-    rnd = nov_cls(dev, lr=args.rnd_lr) if args.rnd else None
+    rnd = nov_cls(dev, lr=args.rnd_lr, bits=args.rnd_bits) if args.rnd else None
     if rnd is not None:
         print(f"intrinsic novelty ON ({args.rnd_mode}) — extrinsic reward IGNORED")
     os.makedirs(args.out, exist_ok=True)

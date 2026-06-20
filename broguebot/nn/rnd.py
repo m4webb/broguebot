@@ -79,7 +79,7 @@ class RND:
     normalization. reward() returns a normalized novelty scalar per observation;
     distill() trains the predictor on the rollout's observations."""
 
-    def __init__(self, device, k: int = 128, lr: float = 1e-4):
+    def __init__(self, device, k: int = 128, lr: float = 1e-4, **_):
         self.device = device
         self.target = _RNDNet(k=k).to(device).eval()
         self.predictor = _RNDNet(k=k).to(device)
