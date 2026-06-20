@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 from ..env import VectorEnv, wipe_gamedata
 from .rewards import REWARDS
-from .rnd import RND
+from .rnd import RND, CountNovelty
 from .featurize import batch as batch_feats, featurize
 from .model import BroguePolicy, Config, count_params
 
@@ -95,6 +95,9 @@ def main():
                     "exploration/combat emerge from novelty-seeking.")
     ap.add_argument("--rnd-lr", type=float, default=1e-4,
                     help="learning rate for the RND predictor network")
+    ap.add_argument("--rnd-mode", default="rnd", choices=["rnd", "count"],
+                    help="intrinsic novelty type: rnd (prediction-error; can "
+                    "collapse) or count (SimHash pseudo-counts; collapse-proof)")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -123,9 +126,10 @@ def main():
         print(f"manual play: disabled actions {disabled}")
     print(f"params: {count_params(model)/1e6:.2f}M device={dev}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
-    rnd = RND(dev, lr=args.rnd_lr) if args.rnd else None
+    nov_cls = {"rnd": RND, "count": CountNovelty}[args.rnd_mode]
+    rnd = nov_cls(dev, lr=args.rnd_lr) if args.rnd else None
     if rnd is not None:
-        print("RND intrinsic reward ON — extrinsic reward IGNORED")
+        print(f"intrinsic novelty ON ({args.rnd_mode}) — extrinsic reward IGNORED")
     os.makedirs(args.out, exist_ok=True)
 
     wipe_gamedata(args.gamedata)

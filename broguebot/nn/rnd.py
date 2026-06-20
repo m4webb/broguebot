@@ -133,3 +133,58 @@ class RND:
         self.target.load_state_dict(sd["target"])
         self.predictor.load_state_dict(sd["predictor"])
         self.opt.load_state_dict(sd["opt"])
+
+
+class CountNovelty:
+    """SimHash count-based pseudo-count novelty (Tang et al. 2017). Hash each
+    observation's random embedding to a discrete bucket; reward = 1/sqrt(count).
+    Lifetime counts -> a never-reached bucket (e.g. a deeper level) STAYS
+    rewarding forever; reward only decays for states actually visited. So unlike
+    RND it can't collapse when the state distribution is narrow — it keeps
+    pulling the agent toward genuinely new states. Same _RNDNet random embedding,
+    then SimHash to `bits` bits. distill() is a no-op (nothing to train)."""
+
+    def __init__(self, device, k: int = 128, bits: int = 22, **_):
+        self.device = device
+        self.embed = _RNDNet(k=k).to(device).eval()
+        for p in self.embed.parameters():
+            p.requires_grad_(False)
+        self.A = torch.randn(bits, k, device=device)   # SimHash hyperplanes
+        self.pow2 = (2 ** torch.arange(bits, device=device)).long()
+        self.counts = {}
+        self.ret_rms = _RunningMeanStd(device=device)
+
+    def _split(self, obs):
+        return (obs["glyphs"].long(), obs["colors"].float(),
+                obs["stats"][..., :1].float())
+
+    @torch.no_grad()
+    def reward_raw(self, obs):
+        g, c, d = self._split(obs)
+        e = self.embed(g, c, d)                         # (N,k) random projection
+        codes = (((e @ self.A.T) > 0).long() * self.pow2).sum(1)  # (N,) bucket id
+        out = torch.empty(e.shape[0], device=self.device)
+        for i, code in enumerate(codes.tolist()):       # lifetime count per bucket
+            n = self.counts.get(code, 0) + 1
+            self.counts[code] = n
+            out[i] = n ** -0.5
+        return out
+
+    @torch.no_grad()
+    def normalize(self, rews, gamma):
+        run = torch.zeros(rews.shape[0], device=rews.device)
+        ret = torch.empty_like(rews)
+        for t in range(rews.shape[1]):
+            run = run * gamma + rews[:, t]
+            ret[:, t] = run
+        self.ret_rms.update(ret.reshape(-1))
+        return rews / self.ret_rms.std
+
+    def distill(self, obs):
+        return float(len(self.counts))   # report #distinct buckets as a metric
+
+    def state_dict(self):
+        return {"embed": self.embed.state_dict(), "n_buckets": len(self.counts)}
+
+    def load_state_dict(self, sd):
+        self.embed.load_state_dict(sd["embed"])
