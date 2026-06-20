@@ -168,6 +168,7 @@ class CountNovelty:
         self.A = torch.randn(bits, k, device=device)   # SimHash hyperplanes
         self.pow2 = (2 ** torch.arange(bits, device=device)).long()
         self.counts = {}
+        self.ep_counts = None           # per-env episodic counts (reset on death)
         self.ret_rms = _RunningMeanStd(device=device)
         # the random conv embedding has near-zero per-dim variance (std ~0.003)
         # -> SimHash collapses all states to a few buckets. Whiten per-dim with
@@ -180,7 +181,7 @@ class CountNovelty:
                 obs["stats"][..., :1].float())
 
     @torch.no_grad()
-    def reward_raw(self, obs):
+    def _codes(self, obs):
         g, c, d = self._split(obs)
         e = self.embed(g, c, d)                         # (N,k) random projection
         self.emb_rms.update(e)
@@ -189,13 +190,39 @@ class CountNovelty:
         if self.depth_key:
             # each depth gets its own bucket-space: a NEW level = all count-1
             # buckets = maximally novel (a fresh dungeon >> another room).
-            depth_int = (d.squeeze(-1) * 26).round().long()
-            codes = depth_int * self.base + codes
-        out = torch.empty(e.shape[0], device=self.device)
-        for i, code in enumerate(codes.tolist()):       # lifetime count per bucket
+            codes = (d.squeeze(-1) * 26).round().long() * self.base + codes
+        return codes
+
+    @torch.no_grad()
+    def reward_raw(self, obs):
+        """Lifetime count: 1/sqrt(times this bucket ever seen)."""
+        codes = self._codes(obs)
+        out = torch.empty(codes.shape[0], device=self.device)
+        for i, code in enumerate(codes.tolist()):
             n = self.counts.get(code, 0) + 1
             self.counts[code] = n
             out[i] = n ** -0.5
+        return out
+
+    @torch.no_grad()
+    def reward_episodic(self, obs_seq, dones):
+        """Episodic (NGU-style) count: 1/sqrt(times this bucket seen THIS LIFE);
+        per-env count resets at each death. Once a level is explored it stops
+        being novel this life, so the only way to keep earning is to find new
+        ground -> descend. Needs the rollout's temporal order + done flags."""
+        N, T = dones.shape
+        if self.ep_counts is None:
+            self.ep_counts = [{} for _ in range(N)]
+        out = torch.empty(N, T, device=self.device)
+        for t in range(T):
+            codes = self._codes({k: v[:, t] for k, v in obs_seq.items()}).tolist()
+            dt = dones[:, t].tolist()
+            for n in range(N):
+                cnt = self.ep_counts[n].get(codes[n], 0) + 1
+                self.ep_counts[n][codes[n]] = cnt
+                out[n, t] = cnt ** -0.5
+                if dt[n]:
+                    self.ep_counts[n] = {}
         return out
 
     @torch.no_grad()

@@ -110,6 +110,10 @@ def main():
                     help="compute novelty over ONLY the dungeon-map region, not "
                     "the full screen — so menus/inventory/sidebar can't be farmed "
                     "as a UI noisy-TV (agent did: ~100 drops/game). Only the world counts.")
+    ap.add_argument("--rnd-episodic", action="store_true",
+                    help="count mode: EPISODIC novelty (NGU-style) — reward states "
+                    "new THIS LIFE, reset at death. Per-life saturation forces "
+                    "progression (explore level -> descend), unlike lifetime counts.")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -215,11 +219,16 @@ def main():
         rnd_loss = 0.0
         if rnd is not None:
             # intrinsic 'interestingness' = novelty of each observation; replaces
-            # the extrinsic reward entirely. Train the predictor on the same obs.
-            flat = {k: v.reshape(N * T, *v.shape[2:]) for k, v in obs_seq.items()}
-            raw = rnd.reward_raw(flat).reshape(N, T).float()
+            # the extrinsic reward entirely.
+            if args.rnd_episodic:
+                raw = rnd.reward_episodic(obs_seq, dones).float()
+                rnd_loss = sum(len(d) for d in rnd.ep_counts) / N  # avg per-life states
+            else:
+                flat = {k: v.reshape(N * T, *v.shape[2:])
+                        for k, v in obs_seq.items()}
+                raw = rnd.reward_raw(flat).reshape(N, T).float()
+                rnd_loss = rnd.distill(flat)   # predictor step (RND) / #buckets (count)
             rews = rnd.normalize(raw, args.gamma)
-            rnd_loss = rnd.distill(flat)
 
         adv = torch.zeros_like(rews)
         last_gae = torch.zeros(N, device=dev)
