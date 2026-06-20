@@ -106,6 +106,10 @@ def main():
                     help="count mode: stratify novelty buckets by dungeon depth, "
                     "so a new level is maximally novel. Diagnostic: does a "
                     "depth-salient novelty metric induce descent?")
+    ap.add_argument("--rnd-map-only", action="store_true",
+                    help="compute novelty over ONLY the dungeon-map region, not "
+                    "the full screen — so menus/inventory/sidebar can't be farmed "
+                    "as a UI noisy-TV (agent did: ~100 drops/game). Only the world counts.")
     ap.add_argument("--disable-actions", default="",
                     help="comma-separated action names to forbid (mask logits "
                     "to -inf), e.g. 'explore,descend,ascend' to force manual "
@@ -136,7 +140,8 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-5)
     nov_cls = {"rnd": RND, "count": CountNovelty}[args.rnd_mode]
     rnd = nov_cls(dev, lr=args.rnd_lr, bits=args.rnd_bits,
-                  depth_key=args.rnd_depth_key) if args.rnd else None
+                  depth_key=args.rnd_depth_key,
+                  map_only=args.rnd_map_only) if args.rnd else None
     if rnd is not None:
         print(f"intrinsic novelty ON ({args.rnd_mode}) — extrinsic reward IGNORED")
     os.makedirs(args.out, exist_ok=True)

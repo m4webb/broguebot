@@ -22,6 +22,13 @@ import torch.nn as nn
 from ..ipc import COLS, ROWS
 from .featurize import GLYPH_VOCAB
 
+# dungeon-map window inside the 100x34 display (sidebar +21 cols left, 3 msg rows
+# top, 2 bottom). Hashing novelty over ONLY this region ignores the sidebar and
+# menu/inventory overlays, so the agent can't farm "novelty" by opening menus or
+# dropping items (a UI noisy-TV) — only the actual game world counts.
+_MX, _MY = 21, 3
+_MW, _MH = COLS - 21, ROWS - 5
+
 
 class _RunningMeanStd:
     """Welford running mean/variance for reward (and obs) normalization."""
@@ -53,8 +60,9 @@ class _RNDNet(nn.Module):
     """Conv stem over (glyph-embedding + 6 RGB channels), depth appended at the
     MLP, -> k-dim embedding. Target and predictor share this architecture."""
 
-    def __init__(self, d_emb: int = 16, k: int = 128):
+    def __init__(self, d_emb: int = 16, k: int = 128, map_only: bool = False):
         super().__init__()
+        self.map_only = map_only
         self.emb = nn.Embedding(GLYPH_VOCAB, d_emb)
         cin = d_emb + 6
         self.conv = nn.Sequential(
@@ -62,13 +70,17 @@ class _RNDNet(nn.Module):
             nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.ReLU(),
             nn.Conv2d(64, 64, 3, stride=2, padding=1), nn.ReLU(),
         )
+        H, W = (_MH, _MW) if map_only else (ROWS, COLS)
         with torch.no_grad():
-            flat = self.conv(torch.zeros(1, cin, ROWS, COLS)).flatten(1).shape[1]
+            flat = self.conv(torch.zeros(1, cin, H, W)).flatten(1).shape[1]
         self.head = nn.Sequential(
             nn.Flatten(), nn.Linear(flat + 1, 256), nn.ReLU(), nn.Linear(256, k))
 
     def forward(self, glyphs, colors, depth):
         # glyphs (N,ROWS,COLS) long; colors (N,6,ROWS,COLS); depth (N,1)
+        if self.map_only:
+            glyphs = glyphs[:, _MY:_MY + _MH, _MX:_MX + _MW]
+            colors = colors[:, :, _MY:_MY + _MH, _MX:_MX + _MW]
         e = self.emb(glyphs).permute(0, 3, 1, 2)
         x = self.conv(torch.cat([e, colors], dim=1)).flatten(1)
         return self.head[1:](torch.cat([x, depth], dim=1))
@@ -79,10 +91,11 @@ class RND:
     normalization. reward() returns a normalized novelty scalar per observation;
     distill() trains the predictor on the rollout's observations."""
 
-    def __init__(self, device, k: int = 128, lr: float = 1e-4, **_):
+    def __init__(self, device, k: int = 128, lr: float = 1e-4,
+                 map_only: bool = False, **_):
         self.device = device
-        self.target = _RNDNet(k=k).to(device).eval()
-        self.predictor = _RNDNet(k=k).to(device)
+        self.target = _RNDNet(k=k, map_only=map_only).to(device).eval()
+        self.predictor = _RNDNet(k=k, map_only=map_only).to(device)
         for p in self.target.parameters():
             p.requires_grad_(False)
         self.opt = torch.optim.Adam(self.predictor.parameters(), lr=lr)
@@ -145,11 +158,11 @@ class CountNovelty:
     then SimHash to `bits` bits. distill() is a no-op (nothing to train)."""
 
     def __init__(self, device, k: int = 128, bits: int = 22,
-                 depth_key: bool = False, **_):
+                 depth_key: bool = False, map_only: bool = False, **_):
         self.device = device
         self.depth_key = depth_key      # stratify buckets by dungeon depth
         self.base = 1 << bits
-        self.embed = _RNDNet(k=k).to(device).eval()
+        self.embed = _RNDNet(k=k, map_only=map_only).to(device).eval()
         for p in self.embed.parameters():
             p.requires_grad_(False)
         self.A = torch.randn(bits, k, device=device)   # SimHash hyperplanes
